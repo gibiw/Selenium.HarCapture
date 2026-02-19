@@ -1,4 +1,4 @@
-# Selenium.Hars
+# Selenium.HarCapture
 
 ## What This Is
 
@@ -53,7 +53,7 @@ Developers can capture complete HTTP traffic from Selenium browser sessions into
 
 - **Target framework**: netstandard2.0 — maximum compatibility (requires Microsoft.Bcl.AsyncInterfaces for IAsyncDisposable)
 - **Dependencies**: Selenium.WebDriver >= 4.0.0, System.Text.Json >= 6.0.0 — kept minimal
-- **Single package**: One NuGet package `Selenium.Hars` — no splitting into multiple packages
+- **Single package**: One NuGet package `Selenium.HarCapture` — no splitting into multiple packages
 - **No external processes**: No proxies or external tools required — everything in-process
 
 ## Key Decisions
@@ -69,4 +69,7 @@ Developers can capture complete HTTP traffic from Selenium browser sessions into
 | Sealed model classes | HAR model is data-only, no inheritance needed, better performance | -- Pending |
 
 ---
-*Last updated: 2026-02-19 after initialization*
+| Rename to Selenium.HarCapture | More descriptive, clearer intent than "Hars", follows NuGet naming conventions | -- Pending |
+
+---
+*Last updated: 2026-02-19 after rename to Selenium.HarCapture*
