@@ -78,11 +78,11 @@ Plans:
   2. Library automatically detects whether to use CDP or INetwork based on driver capabilities (HasDevTools, browser type) at Start() time
   3. Library falls back to INetwork at runtime if CDP session creation fails (exception handling with logging) and continues capture without user intervention
   4. INetwork strategy correctly handles reduced data availability (no detailed timings, limited response body access) and produces valid HAR entries
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md — SeleniumNetworkCaptureStrategy using INetwork API events (FBK-01)
+- [ ] 04-02-PLAN.md — StrategyFactory with capability detection, runtime fallback, and HarCaptureSession IWebDriver constructor (FBK-02, FBK-03)
 
 ### Phase 5: Public API
 **Goal**: HarCapture class and WebDriver extensions provide clean, thread-safe API for one-liner usage
@@ -109,6 +109,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. HAR Foundation | 2/2 | Complete | 2026-02-19 |
 | 2. Capture Infrastructure | 2/2 | Complete | 2026-02-19 |
-| 3. CDP Strategy | 0/2 | Not started | - |
+| 3. CDP Strategy | 2/2 | Complete | 2026-02-20 |
 | 4. Fallback Strategy | 0/2 | Not started | - |
 | 5. Public API | 0/2 | Not started | - |
