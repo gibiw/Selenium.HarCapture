@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: HAR Foundation** - HAR 1.2 model classes and JSON serialization/deserialization
 - [ ] **Phase 2: Capture Infrastructure** - Request/response correlation, capture lifecycle, filtering and configuration
-- [ ] **Phase 3: CDP Strategy** - Chrome DevTools Protocol network capture with detailed timings and response bodies
+- [x] **Phase 3: CDP Strategy** - Chrome DevTools Protocol network capture with detailed timings and response bodies
 - [ ] **Phase 4: Fallback Strategy** - Selenium INetwork API cross-browser capture with automatic detection
 - [ ] **Phase 5: Public API** - HarCapture facade, WebDriver extensions, thread safety, and one-liner usage
 
@@ -66,8 +66,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Selenium.WebDriver dependency and CdpTimingMapper (TDD: ResourceTiming to HAR timings conversion)
-- [ ] 03-02-PLAN.md — CdpNetworkCaptureStrategy implementation and unit tests
+- [x] 03-01-PLAN.md — Selenium.WebDriver dependency and CdpTimingMapper (TDD: ResourceTiming to HAR timings conversion)
+- [x] 03-02-PLAN.md — CdpNetworkCaptureStrategy implementation and unit tests
 
 ### Phase 4: Fallback Strategy
 **Goal**: Selenium INetwork API provides cross-browser capture fallback when CDP is unavailable
