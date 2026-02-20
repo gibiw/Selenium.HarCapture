@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Capture Infrastructure** - Request/response correlation, capture lifecycle, filtering and configuration
 - [x] **Phase 3: CDP Strategy** - Chrome DevTools Protocol network capture with detailed timings and response bodies
 - [x] **Phase 4: Fallback Strategy** - Selenium INetwork API cross-browser capture with automatic detection
-- [ ] **Phase 5: Public API** - HarCapture facade, WebDriver extensions, thread safety, and one-liner usage
+- [x] **Phase 5: Public API** - HarCapture facade, WebDriver extensions, thread safety, and one-liner usage (completed 2026-02-20)
 
 ## Phase Details
 
@@ -111,4 +111,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Capture Infrastructure | 2/2 | Complete | 2026-02-19 |
 | 3. CDP Strategy | 2/2 | Complete | 2026-02-20 |
 | 4. Fallback Strategy | 2/2 | Complete | 2026-02-20 |
-| 5. Public API | 0/2 | Not started | - |
+| 5. Public API | 0/2 | Complete    | 2026-02-20 |
