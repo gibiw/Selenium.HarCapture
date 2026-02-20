@@ -40,8 +40,8 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Fallback Capture
 
 - [x] **FBK-01**: Library captures network traffic via Selenium INetwork API when CDP is unavailable
-- [ ] **FBK-02**: Library automatically detects whether to use CDP or INetwork based on driver capabilities
-- [ ] **FBK-03**: Library falls back to INetwork at runtime if CDP session creation fails
+- [x] **FBK-02**: Library automatically detects whether to use CDP or INetwork based on driver capabilities
+- [x] **FBK-03**: Library falls back to INetwork at runtime if CDP session creation fails
 
 ### Public API
 
@@ -103,8 +103,8 @@ Requirements for initial release. Each maps to roadmap phases.
 | CDP-03 | Phase 3 | Complete |
 | CDP-04 | Phase 3 | Complete |
 | FBK-01 | Phase 4 | Complete |
-| FBK-02 | Phase 4 | Pending |
-| FBK-03 | Phase 4 | Pending |
+| FBK-02 | Phase 4 | Complete |
+| FBK-03 | Phase 4 | Complete |
 | API-01 | Phase 5 | Pending |
 | API-02 | Phase 5 | Pending |
 | API-03 | Phase 5 | Pending |
@@ -115,9 +115,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 **Coverage:**
 - v1 requirements: 28 total
+- Complete: 18
+- Pending: 10
 - Mapped to phases: 28
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-19 after roadmap creation*
+*Last updated: 2026-02-20 after Phase 4 completion*

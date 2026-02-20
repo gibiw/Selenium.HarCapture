@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 1: HAR Foundation** - HAR 1.2 model classes and JSON serialization/deserialization
 - [ ] **Phase 2: Capture Infrastructure** - Request/response correlation, capture lifecycle, filtering and configuration
 - [x] **Phase 3: CDP Strategy** - Chrome DevTools Protocol network capture with detailed timings and response bodies
-- [ ] **Phase 4: Fallback Strategy** - Selenium INetwork API cross-browser capture with automatic detection
+- [x] **Phase 4: Fallback Strategy** - Selenium INetwork API cross-browser capture with automatic detection
 - [ ] **Phase 5: Public API** - HarCapture facade, WebDriver extensions, thread safety, and one-liner usage
 
 ## Phase Details
@@ -82,7 +82,7 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md — SeleniumNetworkCaptureStrategy using INetwork API events (FBK-01)
-- [ ] 04-02-PLAN.md — StrategyFactory with capability detection, runtime fallback, and HarCaptureSession IWebDriver constructor (FBK-02, FBK-03)
+- [x] 04-02-PLAN.md — StrategyFactory with capability detection, runtime fallback, and HarCaptureSession IWebDriver constructor (FBK-02, FBK-03)
 
 ### Phase 5: Public API
 **Goal**: HarCapture class and WebDriver extensions provide clean, thread-safe API for one-liner usage
