@@ -1,3 +1,4 @@
+using System;
 using Selenium.HarCapture.Models;
 
 namespace Selenium.HarCapture.Capture.Internal;
@@ -75,7 +76,7 @@ internal static class CdpTimingMapper
         if (receiveHeadersEnd >= 0 && responseReceivedTime > requestTime)
         {
             double totalTimeMs = (responseReceivedTime - requestTime) * 1000;
-            receive = System.Math.Max(0, totalTimeMs - receiveHeadersEnd);
+            receive = Math.Max(0, totalTimeMs - receiveHeadersEnd);
         }
 
         return new HarTimings
