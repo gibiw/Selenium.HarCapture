@@ -40,7 +40,7 @@ public class CdpTimingMapperTests
         result.Ssl.Should().Be(15); // sslEnd - sslStart
         result.Send.Should().Be(1); // sendEnd - sendStart
         result.Wait.Should().Be(19); // receiveHeadersEnd - sendEnd
-        result.Receive.Should().Be(10); // (responseReceivedTime - requestTime) * 1000 - receiveHeadersEnd = 60 - 50
+        result.Receive.Should().BeApproximately(10, 0.001); // (responseReceivedTime - requestTime) * 1000 - receiveHeadersEnd = 60 - 50
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public class CdpTimingMapperTests
         result.Ssl.Should().BeNull(); // -1 means not applicable
         result.Send.Should().Be(1); // sendEnd - sendStart
         result.Wait.Should().Be(19); // receiveHeadersEnd - sendEnd
-        result.Receive.Should().Be(5); // (1000.025 - 1000.0) * 1000 - 20 = 25 - 20
+        result.Receive.Should().BeApproximately(5, 0.001); // (1000.025 - 1000.0) * 1000 - 20 = 25 - 20
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class CdpTimingMapperTests
         // SSL is NOT added separately to total
         double totalTime = (result.Blocked ?? 0) + (result.Dns ?? 0) + (result.Connect ?? 0) +
                           result.Send + result.Wait + result.Receive;
-        totalTime.Should().Be(0 + 10 + 40 + 1 + 19 + 10); // 80ms total
+        totalTime.Should().BeApproximately(0 + 10 + 40 + 1 + 19 + 10, 0.001); // 80ms total
     }
 
     [Fact]
@@ -180,7 +180,7 @@ public class CdpTimingMapperTests
             responseReceivedTime);
 
         // Assert
-        result.Receive.Should().Be(50); // (1000.100 - 1000.0) * 1000 - 50 = 100 - 50 = 50
+        result.Receive.Should().BeApproximately(50, 0.001); // (1000.100 - 1000.0) * 1000 - 50 = 100 - 50 = 50
     }
 
     [Fact]
