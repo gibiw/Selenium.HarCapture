@@ -46,7 +46,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Public API
 
 - [x] **API-01**: HarCapture class provides sync and async Start/Stop methods
-- [ ] **API-02**: WebDriver extension methods provide one-liner capture (StartHarCapture, CaptureHarAsync)
+- [x] **API-02**: WebDriver extension methods provide one-liner capture (StartHarCapture, CaptureHarAsync)
 - [x] **API-03**: CaptureOptions class provides fluent configuration (CaptureTypes, URL patterns, body size limit)
 - [x] **API-04**: HarCapture exposes IsCapturing and ActiveStrategyName properties for diagnostics
 
@@ -106,7 +106,7 @@ Requirements for initial release. Each maps to roadmap phases.
 | FBK-02 | Phase 4 | Complete |
 | FBK-03 | Phase 4 | Complete |
 | API-01 | Phase 5 | Complete |
-| API-02 | Phase 5 | Pending |
+| API-02 | Phase 5 | Complete |
 | API-03 | Phase 5 | Complete |
 | API-04 | Phase 5 | Complete |
 | THR-01 | Phase 5 | Complete |
