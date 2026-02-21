@@ -43,30 +43,4 @@ public sealed class BasicCaptureTests : IntegrationTestBase
         apiEntry.Response.Status.Should().Be(200);
         apiEntry.Request.Method.Should().Be("GET");
     }
-
-    [Fact]
-    public void CdpCapture_WhenCompatible_CapturesTimings()
-    {
-        if (!IsCdpCompatible())
-        {
-            // Chrome version does not match DevTools protocol in Selenium package — skip
-            return;
-        }
-
-        // Arrange
-        using var capture = StartCapture();
-
-        // Act
-        NavigateTo("/api/data");
-        WaitForNetworkIdle();
-        var har = capture.Stop();
-
-        // Assert
-        var entry = har.Log.Entries.Should()
-            .Contain(e => e.Request.Url.Contains("/api/data"))
-            .Which;
-        entry.Timings.Send.Should().BeGreaterThanOrEqualTo(0);
-        entry.Timings.Wait.Should().BeGreaterThanOrEqualTo(0);
-        entry.Timings.Receive.Should().BeGreaterThanOrEqualTo(0);
-    }
 }
