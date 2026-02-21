@@ -1,6 +1,6 @@
 # Selenium.HarCapture
 
-[![CI](https://github.com/gibiw/gibiw-Selenium.HarCapture/actions/workflows/ci.yml/badge.svg)](https://github.com/gibiw/gibiw-Selenium.HarCapture/actions/workflows/ci.yml)
+[![CI](https://github.com/gibiw/gibiw-Selenium.HarCapture/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gibiw/gibiw-Selenium.HarCapture/actions/workflows/ci.yml)
 [![NuGet](https://img.shields.io/nuget/v/Selenium.HarCapture.svg)](https://www.nuget.org/packages/Selenium.HarCapture/)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/Selenium.HarCapture.svg)](https://www.nuget.org/packages/Selenium.HarCapture/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
