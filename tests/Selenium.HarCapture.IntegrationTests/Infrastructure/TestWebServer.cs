@@ -53,6 +53,13 @@ public sealed class TestWebServer : IAsyncLifetime
             return Results.Text(text, "text/plain");
         });
 
+        app.MapGet("/api/very-large", () =>
+        {
+            // 500KB response body to test truncation issues
+            var text = new string('B', 500 * 1024);
+            return Results.Text(text, "text/plain");
+        });
+
         app.MapGet("/api/cookies", (HttpContext ctx) =>
         {
             ctx.Response.Cookies.Append("test-cookie", "cookie-value");
