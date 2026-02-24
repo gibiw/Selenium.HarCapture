@@ -1,56 +1,53 @@
 using System;
+using System.Linq;
+using System.Text.RegularExpressions;
 using OpenQA.Selenium.DevTools;
 
 namespace Selenium.HarCapture.Capture.Internal.Cdp;
 
 /// <summary>
-/// Creates the appropriate CDP Network adapter based on the browser's DevTools protocol version.
-/// Tries newest version first (V144), then falls back to V143, then V142.
+/// Creates the appropriate CDP Network adapter by auto-discovering available CDP versions
+/// via assembly scanning. Tries newest version first.
 /// </summary>
 internal static class CdpAdapterFactory
 {
     /// <summary>
     /// Creates an <see cref="ICdpNetworkAdapter"/> for the given DevTools session.
-    /// Auto-detects the matching CDP version by trying V144 → V143 → V142.
+    /// Scans the Selenium assembly for all V{N}.DevToolsSessionDomains types
+    /// and tries them from newest to oldest.
     /// </summary>
     /// <param name="session">An active DevTools session.</param>
-    /// <returns>A version-specific adapter that implements <see cref="ICdpNetworkAdapter"/>.</returns>
+    /// <returns>A reflection-based adapter that implements <see cref="ICdpNetworkAdapter"/>.</returns>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when none of the supported CDP versions (V142-V144) match the browser.
+    /// Thrown when no compatible CDP version is found in the assembly.
     /// </exception>
     internal static ICdpNetworkAdapter Create(DevToolsSession session)
     {
-        // Try newest first: V144 → V143 → V142
-        try
+        var assembly = typeof(DevToolsSession).Assembly;
+
+        var versionTypes = assembly.GetTypes()
+            .Select(t => (Type: t, Match: Regex.Match(t.FullName ?? "", @"\.V(\d+)\.DevToolsSessionDomains$")))
+            .Where(x => x.Match.Success)
+            .Select(x => (x.Type, Version: int.Parse(x.Match.Groups[1].Value)))
+            .OrderByDescending(x => x.Version)
+            .ToList();
+
+        foreach (var (domainsType, _) in versionTypes)
         {
-            return new CdpNetworkAdapterV144(session);
-        }
-        catch (InvalidOperationException)
-        {
-            // V144 not supported, try next
+            try
+            {
+                return new ReflectiveCdpNetworkAdapter(session, domainsType);
+            }
+            catch (InvalidOperationException)
+            {
+                // Version mismatch with the browser, try next
+            }
         }
 
-        try
-        {
-            return new CdpNetworkAdapterV143(session);
-        }
-        catch (InvalidOperationException)
-        {
-            // V143 not supported, try next
-        }
-
-        try
-        {
-            return new CdpNetworkAdapterV142(session);
-        }
-        catch (InvalidOperationException)
-        {
-            // V142 not supported either
-        }
-
+        var tried = string.Join(", ", versionTypes.Select(x => $"V{x.Version}"));
         throw new InvalidOperationException(
-            "None of the supported CDP versions (V142, V143, V144) match the browser's DevTools protocol. " +
-            "Ensure your Chrome/Edge version is compatible with Selenium 4.40.0 (Chrome 142-144). " +
+            $"No compatible CDP version found in the assembly. Tried: {tried}. " +
+            "Ensure your Chrome/Edge version is compatible with the installed Selenium.WebDriver package. " +
             "Use CaptureOptions.ForceSeleniumNetworkApi = true as a workaround.");
     }
 }
