@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -20,6 +21,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private INetwork? _network;
     private CaptureOptions _options = null!;
     private readonly RequestResponseCorrelator _correlator = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _requestTimestamps = new();
     private UrlPatternMatcher? _urlMatcher;
     private bool _disposed;
 
@@ -84,6 +86,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         }
 
         _correlator.Clear();
+        _requestTimestamps.Clear();
     }
 
     /// <summary>
@@ -103,8 +106,13 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             // Build HAR request
             var harRequest = BuildHarRequest(e);
 
+            // Record timestamp for basic timing calculation
+            var now = DateTimeOffset.UtcNow;
+            var requestId = e.RequestId ?? "";
+            _requestTimestamps[requestId] = now;
+
             // Record request in correlator
-            _correlator.OnRequestSent(e.RequestId ?? "", harRequest, DateTimeOffset.UtcNow);
+            _correlator.OnRequestSent(requestId, harRequest, now);
         }
         catch (Exception ex)
         {
@@ -124,16 +132,23 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             // Build HAR response
             var harResponse = BuildHarResponse(e);
 
-            // INetwork lacks detailed timing data, use simple timings
+            // Calculate basic timing from request/response timestamps
+            var requestId = e.RequestId ?? "";
+            double totalTime = 0;
+            if (_requestTimestamps.TryRemove(requestId, out var requestTime))
+            {
+                totalTime = (DateTimeOffset.UtcNow - requestTime).TotalMilliseconds;
+            }
+
             var harTimings = new HarTimings
             {
                 Send = 0,
-                Wait = 0,
+                Wait = totalTime,
                 Receive = 0
             };
 
             // Correlate response with request
-            var entry = _correlator.OnResponseReceived(e.RequestId ?? "", harResponse, harTimings, 0);
+            var entry = _correlator.OnResponseReceived(requestId, harResponse, harTimings, totalTime);
 
             if (entry != null)
             {
@@ -427,5 +442,6 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         }
 
         _correlator.Clear();
+        _requestTimestamps.Clear();
     }
 }
