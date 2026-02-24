@@ -58,6 +58,11 @@ public abstract class IntegrationTestBase : IAsyncLifetime
         return new CaptureOptions().ForceSeleniumNetwork();
     }
 
+    protected static CaptureOptions CdpOptions()
+    {
+        return new CaptureOptions(); // CDP is the default strategy
+    }
+
     protected bool IsCdpCompatible()
     {
         try
