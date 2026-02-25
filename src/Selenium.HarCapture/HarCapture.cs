@@ -173,7 +173,17 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
 
-        var logger = _session!.Logger;
+        // Guard: WithOutputFile + StopAndSaveAsync(path) conflict
+        if (_session!.OutputFilePath != null)
+        {
+            throw new InvalidOperationException(
+                $"Cannot call StopAndSaveAsync(path) when WithOutputFile is configured. " +
+                $"Output is already streaming to '{_session.OutputFilePath}'. " +
+                $"Use parameterless StopAndSaveAsync() instead to complete the streaming file, " +
+                $"or remove WithOutputFile() from CaptureOptions to use in-memory capture with explicit save path.");
+        }
+
+        var logger = _session.Logger;
 
         logger?.Log("HarCapture", "StopAndSave: stopping capture...");
         var har = await _session.StopAsync().ConfigureAwait(false);
