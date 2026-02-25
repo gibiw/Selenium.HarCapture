@@ -154,6 +154,14 @@ public sealed class CaptureOptions
     public string? BrowserVersion { get; set; }
 
     /// <summary>
+    /// Gets or sets whether to enable gzip compression for the output file.
+    /// When true in streaming mode (WithOutputFile), the HAR file is compressed to .gz format
+    /// at finalization time after all entries are written.
+    /// Default is false (no compression).
+    /// </summary>
+    public bool EnableCompression { get; set; } = false;
+
+    /// <summary>
     /// Sets the output file path for streaming HAR capture.
     /// Entries will be written incrementally to the file, keeping it always valid.
     /// </summary>
@@ -196,6 +204,18 @@ public sealed class CaptureOptions
     {
         BrowserName = name;
         BrowserVersion = version;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables gzip compression for the output file.
+    /// In streaming mode, compression happens at finalization after all entries are written.
+    /// The output file path will have .gz appended if it doesn't already end with .gz.
+    /// </summary>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithCompression()
+    {
+        EnableCompression = true;
         return this;
     }
 }

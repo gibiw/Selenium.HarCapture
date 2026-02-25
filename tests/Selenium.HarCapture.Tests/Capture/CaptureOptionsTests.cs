@@ -19,6 +19,7 @@ public sealed class CaptureOptionsTests
         options.MaxResponseBodySize.Should().Be(0);
         options.UrlIncludePatterns.Should().BeNull();
         options.UrlExcludePatterns.Should().BeNull();
+        options.EnableCompression.Should().BeFalse();
     }
 
     [Fact]
@@ -176,6 +177,30 @@ public sealed class CaptureOptionsTests
         // Assert
         options.BrowserName.Should().Be("MyBrowser");
         options.BrowserVersion.Should().Be("1.0");
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void Compression_DefaultIsFalse()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions();
+
+        // Assert
+        options.EnableCompression.Should().BeFalse();
+    }
+
+    [Fact]
+    public void FluentApi_WithCompression_SetsValueAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithCompression();
+
+        // Assert
+        options.EnableCompression.Should().BeTrue();
         result.Should().BeSameAs(options);
     }
 }
