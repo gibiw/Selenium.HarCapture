@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -438,6 +440,85 @@ public sealed class HarCaptureSessionTests
 
         // Assert
         har.Log.Browser.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithStreamingAndCompression_CompressesOutputFile()
+    {
+        // Arrange
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        try
+        {
+            var strategy = new MockCaptureStrategy();
+            var options = new CaptureOptions()
+                .WithOutputFile(tempFile)
+                .WithCompression();
+            var session = new HarCaptureSession(strategy, options);
+
+            await session.StartAsync("page1", "Test Page");
+
+            // Simulate an entry via strategy
+            strategy.SimulateEntry(new HarEntry
+            {
+                StartedDateTime = DateTimeOffset.UtcNow,
+                Time = 100,
+                Request = new HarRequest
+                {
+                    Method = "GET",
+                    Url = "https://example.com",
+                    HttpVersion = "HTTP/1.1",
+                    Cookies = new List<HarCookie>(),
+                    Headers = new List<HarHeader>(),
+                    QueryString = new List<HarQueryString>(),
+                    HeadersSize = -1,
+                    BodySize = 0
+                },
+                Response = new HarResponse
+                {
+                    Status = 200,
+                    StatusText = "OK",
+                    HttpVersion = "HTTP/1.1",
+                    Cookies = new List<HarCookie>(),
+                    Headers = new List<HarHeader>(),
+                    Content = new HarContent { Size = 0, MimeType = "text/html" },
+                    RedirectURL = "",
+                    HeadersSize = -1,
+                    BodySize = -1
+                },
+                Cache = new HarCache(),
+                Timings = new HarTimings { Send = 1, Wait = 50, Receive = 49 }
+            }, "req1");
+
+            // Allow consumer to process
+            await Task.Delay(200);
+
+            // Act
+            await session.StopAsync();
+
+            // Assert — .gz file should exist, original .har should be deleted
+            var gzFile = tempFile + ".gz";
+            File.Exists(gzFile).Should().BeTrue("compressed file should exist");
+            File.Exists(tempFile).Should().BeFalse("original uncompressed file should be deleted");
+
+            // Verify gzip magic bytes
+            var fileBytes = File.ReadAllBytes(gzFile);
+            fileBytes.Length.Should().BeGreaterThan(2);
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic");
+
+            // Verify content can be decompressed
+            using var fileStream = new FileStream(gzFile, FileMode.Open, FileAccess.Read);
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+            using var reader = new StreamReader(gzipStream);
+            var json = await reader.ReadToEndAsync();
+            json.Should().Contain("\"log\"");
+            json.Should().Contain("\"entries\"");
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+            if (File.Exists(tempFile + ".gz")) File.Delete(tempFile + ".gz");
+        }
     }
 
     private class MockCapabilitiesDriver : IWebDriver, IHasCapabilities

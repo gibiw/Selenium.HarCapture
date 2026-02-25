@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
@@ -231,6 +232,35 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             await _streamWriter.DisposeAsync().ConfigureAwait(false);
             _logger?.Log("HarCapture", $"Streaming completed: {_streamWriter.Count} entries, {_har.Log.Pages?.Count ?? 0} pages");
             _streamWriter = null;
+
+            // Post-finalization compression: compress the uncompressed HAR file to .gz
+            if (_options.EnableCompression && _options.OutputFilePath != null)
+            {
+                var sourcePath = _options.OutputFilePath;
+                var compressedPath = sourcePath.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
+                    ? sourcePath
+                    : sourcePath + ".gz";
+
+                _logger?.Log("HarCapture", $"Compressing: {sourcePath} -> {compressedPath}");
+
+                using (var inputStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None, bufferSize: 65536, useAsync: true))
+                using (var outputStream = new FileStream(compressedPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true))
+                using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
+                {
+                    await inputStream.CopyToAsync(gzipStream).ConfigureAwait(false);
+                    // No explicit Flush on GZipStream — Dispose handles footer writing (research pitfall #1)
+                }
+
+                // Delete uncompressed original if we created a new .gz file
+                if (!string.Equals(sourcePath, compressedPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(sourcePath);
+                    _logger?.Log("HarCapture", $"Deleted uncompressed file: {sourcePath}");
+                }
+
+                var compressedSize = new FileInfo(compressedPath).Length;
+                _logger?.Log("HarCapture", $"Compression completed: {compressedPath} ({compressedSize} bytes)");
+            }
         }
         else
         {
