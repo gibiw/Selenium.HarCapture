@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Selenium.HarCapture.Models;
 using Selenium.HarCapture.Serialization;
 
@@ -19,7 +20,7 @@ namespace Selenium.HarCapture.Capture.Internal;
 /// Each entry is serialized directly to the file stream via <see cref="JsonSerializer.Serialize{T}(Stream, T, JsonSerializerOptions)"/>.
 /// Thread-safe via internal locking.
 /// </remarks>
-internal sealed class HarStreamWriter : IDisposable
+internal sealed class HarStreamWriter : IDisposable, IAsyncDisposable
 {
     private readonly FileStream _stream;
     private readonly JsonSerializerOptions _options;
@@ -197,5 +198,11 @@ internal sealed class HarStreamWriter : IDisposable
 
         _stream.Dispose();
         _disposed = true;
+    }
+
+    /// <inheritdoc />
+    public ValueTask DisposeAsync()
+    {
+        throw new NotImplementedException("Async disposal not yet implemented — Phase 10 RED phase");
     }
 }

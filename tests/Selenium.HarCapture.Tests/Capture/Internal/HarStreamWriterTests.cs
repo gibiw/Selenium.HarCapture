@@ -11,7 +11,7 @@ using Xunit;
 
 namespace Selenium.HarCapture.Tests.Capture.Internal;
 
-public sealed class HarStreamWriterTests : IDisposable
+public sealed class HarStreamWriterTests : IDisposable, IAsyncLifetime
 {
     private readonly string _tempDir;
 
@@ -20,6 +20,10 @@ public sealed class HarStreamWriterTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), $"HarStreamWriterTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     public void Dispose()
     {
@@ -323,5 +327,102 @@ public sealed class HarStreamWriterTests : IDisposable
         var har = HarSerializer.Load(path);
         har.Log.Entries.Should().HaveCount(1);
         har.Log.Pages.Should().HaveCount(2);
+    }
+
+    // ========== New Async Tests (Phase 10) ==========
+
+    [Fact]
+    public async Task DisposeAsync_DrainsRemainingEntries()
+    {
+        var path = TempFile();
+
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                writer.WriteEntry(CreateEntry($"https://example.com/{i}"));
+            }
+            // DisposeAsync should drain all posted entries
+        }
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(100, "all entries should be drained on async disposal");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_HighTraffic_NoEntryLoss()
+    {
+        var path = TempFile();
+        const int threadCount = 10;
+        const int entriesPerThread = 100;
+        const int totalExpected = threadCount * entriesPerThread;
+
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            var tasks = new Task[threadCount];
+            for (int t = 0; t < threadCount; t++)
+            {
+                var threadId = t;
+                tasks[t] = Task.Run(() =>
+                {
+                    for (int i = 0; i < entriesPerThread; i++)
+                    {
+                        writer.WriteEntry(CreateEntry($"https://example.com/t{threadId}/e{i}"));
+                    }
+                });
+            }
+
+            await Task.WhenAll(tasks);
+            // DisposeAsync should drain all entries from channel
+        }
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(totalExpected, "no entries should be lost under high traffic");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CalledTwice_DoesNotThrow()
+    {
+        var path = TempFile();
+        var writer = new HarStreamWriter(path, "1.2", DefaultCreator);
+
+        writer.WriteEntry(CreateEntry());
+
+        await writer.DisposeAsync();
+        await writer.DisposeAsync(); // Should be idempotent
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task WriteEntry_AfterDisposeAsync_ThrowsObjectDisposedException()
+    {
+        var path = TempFile();
+        var writer = new HarStreamWriter(path, "1.2", DefaultCreator);
+
+        await writer.DisposeAsync();
+
+        var act = () => writer.WriteEntry(CreateEntry());
+        act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void Dispose_Synchronous_CompletesWithoutDeadlock()
+    {
+        var path = TempFile();
+
+        using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                writer.WriteEntry(CreateEntry($"https://example.com/{i}"));
+            }
+            // Sync Dispose should complete without deadlock (best effort drain)
+        }
+
+        // File should exist and be valid, though some entries might be lost if drain timeout
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().NotBeEmpty("at least some entries should be written");
     }
 }
