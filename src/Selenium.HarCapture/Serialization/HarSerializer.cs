@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.IO.Compression;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -72,9 +74,18 @@ public static class HarSerializer
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
 
-        using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true);
-        await JsonSerializer.SerializeAsync(stream, har, CreateOptions(writeIndented), cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true);
+
+        if (IsGzipPath(filePath))
+        {
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Compress);
+            await JsonSerializer.SerializeAsync(gzipStream, har, CreateOptions(writeIndented), cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await JsonSerializer.SerializeAsync(fileStream, har, CreateOptions(writeIndented), cancellationToken).ConfigureAwait(false);
+            await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -97,8 +108,20 @@ public static class HarSerializer
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
 
-        var json = Serialize(har, writeIndented);
-        File.WriteAllText(filePath, json);
+        if (IsGzipPath(filePath))
+        {
+            var json = Serialize(har, writeIndented);
+            var bytes = Encoding.UTF8.GetBytes(json);
+
+            using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Compress);
+            gzipStream.Write(bytes, 0, bytes.Length);
+        }
+        else
+        {
+            var json = Serialize(har, writeIndented);
+            File.WriteAllText(filePath, json);
+        }
     }
 
     /// <summary>
@@ -122,8 +145,18 @@ public static class HarSerializer
             throw new FileNotFoundException($"HAR file not found at path: {filePath}", filePath);
         }
 
-        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096, useAsync: true);
-        var result = await JsonSerializer.DeserializeAsync<Har>(stream, CreateOptions(false), cancellationToken).ConfigureAwait(false);
+        using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096, useAsync: true);
+
+        Har? result;
+        if (IsGzipPath(filePath))
+        {
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+            result = await JsonSerializer.DeserializeAsync<Har>(gzipStream, CreateOptions(false), cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            result = await JsonSerializer.DeserializeAsync<Har>(fileStream, CreateOptions(false), cancellationToken).ConfigureAwait(false);
+        }
 
         return result ?? throw new JsonException("Deserialization resulted in a null Har object.");
     }
@@ -148,9 +181,29 @@ public static class HarSerializer
             throw new FileNotFoundException($"HAR file not found at path: {filePath}", filePath);
         }
 
-        var json = File.ReadAllText(filePath);
-        return Deserialize(json);
+        if (IsGzipPath(filePath))
+        {
+            using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+            using var memoryStream = new MemoryStream();
+            gzipStream.CopyTo(memoryStream);
+            var json = Encoding.UTF8.GetString(memoryStream.ToArray());
+            return Deserialize(json);
+        }
+        else
+        {
+            var json = File.ReadAllText(filePath);
+            return Deserialize(json);
+        }
     }
+
+    /// <summary>
+    /// Determines if the file path indicates a gzip-compressed file based on extension.
+    /// </summary>
+    /// <param name="filePath">The file path to check.</param>
+    /// <returns>True if the file path ends with .gz extension (case-insensitive), otherwise false.</returns>
+    private static bool IsGzipPath(string filePath)
+        => Path.GetExtension(filePath).Equals(".gz", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Creates JsonSerializerOptions configured for HAR serialization.
