@@ -230,7 +230,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         {
             postData = new HarPostData
             {
-                MimeType = "application/octet-stream",
+                MimeType = ExtractMimeType(e.RequestHeaders),
                 Params = new List<HarParam>(),
                 Text = e.RequestPostData
             };
@@ -323,6 +323,28 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             HeadersSize = -1,
             BodySize = bodySize
         };
+    }
+
+    /// <summary>
+    /// Extracts MIME type from request headers dictionary.
+    /// </summary>
+    /// <param name="headers">The request headers dictionary.</param>
+    /// <param name="defaultMimeType">The default MIME type to return if Content-Type is not found.</param>
+    /// <returns>The MIME type portion of the Content-Type header, or the default value.</returns>
+    internal static string ExtractMimeType(IReadOnlyDictionary<string, string>? headers, string defaultMimeType = "application/octet-stream")
+    {
+        if (headers == null) return defaultMimeType;
+
+        foreach (var kvp in headers)
+        {
+            if (kvp.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(kvp.Value))
+            {
+                // Content-Type may include charset/boundary, extract just the MIME type
+                return kvp.Value.Split(';')[0].Trim();
+            }
+        }
+
+        return defaultMimeType;
     }
 
     /// <summary>
@@ -479,5 +501,29 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
 
         _correlator.Clear();
         _requestTimestamps.Clear();
+    }
+
+    /// <summary>
+    /// Extracts the MIME type from the Content-Type header.
+    /// </summary>
+    /// <param name="headers">Request headers dictionary.</param>
+    /// <returns>The MIME type portion of Content-Type, or "application/octet-stream" if not found.</returns>
+    internal static string ExtractMimeType(Dictionary<string, string>? headers)
+    {
+        if (headers == null || headers.Count == 0)
+            return "application/octet-stream";
+
+        // Find Content-Type header (case-insensitive)
+        var contentType = headers.FirstOrDefault(kvp =>
+            kvp.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)).Value;
+
+        if (string.IsNullOrEmpty(contentType))
+            return "application/octet-stream";
+
+        // Strip parameters (e.g., "application/json; charset=utf-8" -> "application/json")
+        var semicolonIndex = contentType.IndexOf(';');
+        return semicolonIndex >= 0
+            ? contentType.Substring(0, semicolonIndex).Trim()
+            : contentType.Trim();
     }
 }
