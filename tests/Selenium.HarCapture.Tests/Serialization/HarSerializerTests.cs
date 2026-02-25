@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using FluentAssertions;
 using Selenium.HarCapture.Models;
@@ -630,6 +631,195 @@ public sealed class HarSerializerTests
         // Assert
         act.Should().Throw<FileNotFoundException>()
             .WithMessage($"*{nonExistentPath}*");
+    }
+
+    // Compression tests
+
+    [Fact]
+    public async Task SaveAsync_GzExtension_CompressesFile()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            await HarSerializer.SaveAsync(har, tempFile);
+
+            // Assert
+            File.Exists(tempFile).Should().BeTrue("file should be created");
+            var fileBytes = File.ReadAllBytes(tempFile);
+            fileBytes.Length.Should().BeGreaterThan(2, "file should contain data");
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic number");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic number");
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public void Save_GzExtension_CompressesFile()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            HarSerializer.Save(har, tempFile);
+
+            // Assert
+            File.Exists(tempFile).Should().BeTrue("file should be created");
+            var fileBytes = File.ReadAllBytes(tempFile);
+            fileBytes.Length.Should().BeGreaterThan(2, "file should contain data");
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic number");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic number");
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_GzExtension_DecompressesFile()
+    {
+        // Arrange
+        var original = CreateMinimalHar();
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Manually create compressed file
+            var json = HarSerializer.Serialize(original);
+            using (var fileStream = new FileStream(gzPath, FileMode.Create))
+            using (var gzipStream = new GZipStream(fileStream, CompressionMode.Compress))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                gzipStream.Write(bytes, 0, bytes.Length);
+            }
+
+            // Act
+            var loaded = await HarSerializer.LoadAsync(gzPath);
+
+            // Assert
+            loaded.Should().NotBeNull();
+            loaded.Log.Version.Should().Be(original.Log.Version);
+            loaded.Log.Creator.Name.Should().Be(original.Log.Creator.Name);
+        }
+        finally
+        {
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void Load_GzExtension_DecompressesFile()
+    {
+        // Arrange
+        var original = CreateMinimalHar();
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Manually create compressed file
+            var json = HarSerializer.Serialize(original);
+            using (var fileStream = new FileStream(gzPath, FileMode.Create))
+            using (var gzipStream = new GZipStream(fileStream, CompressionMode.Compress))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                gzipStream.Write(bytes, 0, bytes.Length);
+            }
+
+            // Act
+            var loaded = HarSerializer.Load(gzPath);
+
+            // Assert
+            loaded.Should().NotBeNull();
+            loaded.Log.Version.Should().Be(original.Log.Version);
+            loaded.Log.Creator.Name.Should().Be(original.Log.Creator.Name);
+        }
+        finally
+        {
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SaveLoad_Compressed_RoundTrip_PreservesData()
+    {
+        // Arrange
+        var original = CreateSampleHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            await HarSerializer.SaveAsync(original, tempFile);
+            var loaded = await HarSerializer.LoadAsync(tempFile);
+
+            // Assert
+            loaded.Should().BeEquivalentTo(original, options => options
+                .Using<DateTimeOffset>(ctx => ctx.Subject.Should().BeCloseTo(ctx.Expectation, TimeSpan.FromMilliseconds(1)))
+                .WhenTypeIs<DateTimeOffset>());
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public void Compressed_File_IsSmallerThanOriginal()
+    {
+        // Arrange
+        var har = CreateHarWithLargePayload(3, 100_000);
+        var harPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            HarSerializer.Save(har, harPath);
+            HarSerializer.Save(har, gzPath);
+
+            // Assert
+            var harFileInfo = new FileInfo(harPath);
+            var gzFileInfo = new FileInfo(gzPath);
+
+            gzFileInfo.Length.Should().BeLessThan(harFileInfo.Length,
+                "compressed .gz file should be smaller than uncompressed .har file");
+        }
+        finally
+        {
+            if (File.Exists(harPath))
+            {
+                File.Delete(harPath);
+            }
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
     }
 
     // Helper methods
