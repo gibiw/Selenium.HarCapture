@@ -19,6 +19,8 @@ A .NET library for capturing HTTP Archive (HAR 1.2) files from Selenium WebDrive
 - **Response body size limiting** to control memory usage
 - **Streaming capture to file** with O(1) memory — async channel-based writer, always-valid HAR, crash-safe
 - **WebSocket capture** — captures WS frames via CDP `_webSocketMessages` extension (Chrome DevTools HAR compatible)
+- **Response body scope filtering** — skip expensive CDP `getResponseBody` calls for unwanted MIME types (CSS, JS, images, fonts) to reduce WebSocket contention and speed up navigation
+- **Bounded body retrieval concurrency** — channel-based worker pool (3 workers) replaces unbounded `Task.Run` for predictable CDP load
 - **Gzip compression** — automatic `.gz` detection in `HarSerializer`, and `WithCompression()` for streaming mode
 - **File-based diagnostic logging** via `WithLogFile()`
 - **Browser auto-detection** from WebDriver capabilities with manual override
@@ -119,6 +121,8 @@ var options = new CaptureOptions()
     .WithMaxResponseBodySize(1_000_000)       // 1 MB limit
     .WithUrlIncludePatterns("**/api/**")       // only API calls
     .WithUrlExcludePatterns("**/*.png", "**/*.css") // skip static assets
+    .WithResponseBodyScope(ResponseBodyScope.PagesAndApi) // only retrieve HTML/JSON/XML bodies
+    .WithResponseBodyMimeFilter("image/png")  // additionally retrieve PNG bodies
     .WithCreatorName("MyTestSuite")
     .WithBrowser("Chrome", "131.0.6778.86")   // manual browser override (auto-detected by default)
     .WithOutputFile("capture.har")             // streaming mode (O(1) memory)
@@ -170,6 +174,47 @@ Exclude patterns take precedence over include patterns.
 // Limit response bodies to 500 KB
 var options = new CaptureOptions()
     .WithMaxResponseBodySize(512_000);
+```
+
+#### Response Body Scope
+
+By default, the library retrieves response bodies for all requests. This means every CSS, JS, image, and font triggers a CDP `Network.getResponseBody` call, competing with navigation traffic over the WebSocket connection.
+
+Use `ResponseBodyScope` to skip body retrieval for resource types you don't need:
+
+```csharp
+// Only retrieve bodies for HTML pages and API responses (JSON, XML)
+var options = new CaptureOptions()
+    .WithResponseBodyScope(ResponseBodyScope.PagesAndApi);
+
+// Retrieve all text content (text/*, application/json, application/xml, application/javascript)
+var options = new CaptureOptions()
+    .WithResponseBodyScope(ResponseBodyScope.TextContent);
+
+// Skip all body retrieval — headers and timings only
+var options = new CaptureOptions()
+    .WithResponseBodyScope(ResponseBodyScope.None);
+```
+
+| Scope | MIME types retrieved |
+|---|---|
+| `All` | Everything **(default)** |
+| `PagesAndApi` | `text/html`, `application/json`, `application/xml`, `text/xml`, `multipart/form-data`, `application/x-www-form-urlencoded` |
+| `TextContent` | `text/*` (prefix match), `application/json`, `application/xml`, `application/javascript`, `application/x-javascript` |
+| `None` | Nothing (headers and timings only) |
+
+Extra MIME types can be added on top of any scope:
+
+```csharp
+// PagesAndApi + additionally capture PNG and SVG images
+var options = new CaptureOptions()
+    .WithResponseBodyScope(ResponseBodyScope.PagesAndApi)
+    .WithResponseBodyMimeFilter("image/png", "image/svg+xml");
+
+// None + only retrieve specific types
+var options = new CaptureOptions()
+    .WithResponseBodyScope(ResponseBodyScope.None)
+    .WithResponseBodyMimeFilter("application/json");
 ```
 
 #### Capture Strategy
@@ -364,11 +409,13 @@ Selenium.HarCapture/
 │       ├── Capture/
 │       │   ├── CaptureOptions.cs         # Configuration
 │       │   ├── CaptureType.cs            # Flags enum
+│       │   ├── ResponseBodyScope.cs      # Body retrieval scope enum
 │       │   ├── HarCaptureSession.cs      # Session orchestrator
 │       │   ├── Internal/
 │       │   │   ├── HarStreamWriter.cs    # Async channel-based incremental HAR writer
 │       │   │   ├── BrowserCapabilityExtractor.cs # Browser auto-detection
 │       │   │   ├── FileLogger.cs         # Diagnostic file logging
+│       │   │   ├── MimeTypeMatcher.cs    # MIME-based body retrieval filter
 │       │   │   ├── UrlPatternMatcher.cs  # URL glob filtering
 │       │   │   ├── WebSocketFrameAccumulator.cs # WebSocket frame accumulator
 │       │   │   ├── RequestResponseCorrelator.cs
@@ -385,7 +432,7 @@ Selenium.HarCapture/
 │       └── Serialization/
 │           └── HarSerializer.cs           # JSON serialization
 └── tests/
-    ├── Selenium.HarCapture.Tests/             # Unit tests (184 tests)
+    ├── Selenium.HarCapture.Tests/             # Unit tests (265 tests)
     └── Selenium.HarCapture.IntegrationTests/  # Integration tests (25 tests)
 ```
 

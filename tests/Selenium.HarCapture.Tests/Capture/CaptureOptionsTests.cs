@@ -20,6 +20,8 @@ public sealed class CaptureOptionsTests
         options.UrlIncludePatterns.Should().BeNull();
         options.UrlExcludePatterns.Should().BeNull();
         options.EnableCompression.Should().BeFalse();
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.All);
+        options.ResponseBodyMimeFilter.Should().BeNull();
     }
 
     [Fact]
@@ -231,5 +233,56 @@ public sealed class CaptureOptionsTests
         // Assert
         options.CaptureTypes.HasFlag(CaptureType.AllText).Should().BeTrue();
         options.CaptureTypes.HasFlag(CaptureType.WebSocket).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResponseBodyScope_DefaultIsAll()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions();
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.All);
+    }
+
+    [Fact]
+    public void FluentApi_WithResponseBodyScope_SetsValueAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithResponseBodyScope(ResponseBodyScope.PagesAndApi);
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.PagesAndApi);
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void FluentApi_WithResponseBodyMimeFilter_SetsFilterAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithResponseBodyMimeFilter("image/png", "image/svg+xml");
+
+        // Assert
+        options.ResponseBodyMimeFilter.Should().Equal("image/png", "image/svg+xml");
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void FluentApi_ScopeAndFilter_Composable()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions()
+            .WithResponseBodyScope(ResponseBodyScope.PagesAndApi)
+            .WithResponseBodyMimeFilter("image/png", "image/svg+xml");
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.PagesAndApi);
+        options.ResponseBodyMimeFilter.Should().Equal("image/png", "image/svg+xml");
     }
 }

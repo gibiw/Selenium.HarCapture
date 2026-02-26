@@ -154,6 +154,21 @@ public sealed class CaptureOptions
     public string? BrowserVersion { get; set; }
 
     /// <summary>
+    /// Gets or sets which response bodies to retrieve via CDP.
+    /// Limiting body retrieval reduces CDP WebSocket contention and improves navigation speed.
+    /// Default is <see cref="ResponseBodyScope.All"/> (backward compatible — retrieve all bodies).
+    /// </summary>
+    public ResponseBodyScope ResponseBodyScope { get; set; } = ResponseBodyScope.All;
+
+    /// <summary>
+    /// Gets or sets additional MIME types for body retrieval, additive to <see cref="ResponseBodyScope"/> preset.
+    /// For example, with <see cref="Capture.ResponseBodyScope.PagesAndApi"/> scope and filter ["image/png"],
+    /// both HTML/JSON and PNG bodies are retrieved.
+    /// Default is null (no extra types).
+    /// </summary>
+    public IReadOnlyList<string>? ResponseBodyMimeFilter { get; set; }
+
+    /// <summary>
     /// Gets or sets whether to enable gzip compression for the output file.
     /// When true in streaming mode (WithOutputFile), the HAR file is compressed to .gz format
     /// at finalization time after all entries are written.
@@ -215,6 +230,28 @@ public sealed class CaptureOptions
     public CaptureOptions WithWebSocketCapture()
     {
         CaptureTypes |= CaptureType.WebSocket;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets which response bodies to retrieve via CDP.
+    /// </summary>
+    /// <param name="scope">The body retrieval scope.</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithResponseBodyScope(ResponseBodyScope scope)
+    {
+        ResponseBodyScope = scope;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets additional MIME types for body retrieval, additive to <see cref="ResponseBodyScope"/> preset.
+    /// </summary>
+    /// <param name="mimeTypes">Extra MIME types to retrieve (e.g., "image/png", "image/svg+xml").</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithResponseBodyMimeFilter(params string[] mimeTypes)
+    {
+        ResponseBodyMimeFilter = mimeTypes;
         return this;
     }
 

@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] - 2026-02-26
+## [0.2.0] - 2026-02-27
 
 ### Added
 
+- **Response body scope filtering** — new `ResponseBodyScope` enum (`All`, `PagesAndApi`, `TextContent`, `None`) controls which response bodies are retrieved via CDP `Network.getResponseBody`. Skipping bodies for CSS, JS, images, and fonts (typically 90% of requests) reduces CDP WebSocket contention and speeds up navigation.
+- `CaptureOptions.WithResponseBodyScope(ResponseBodyScope scope)` fluent method.
+- `CaptureOptions.WithResponseBodyMimeFilter(params string[] mimeTypes)` fluent method — additive extra MIME types on top of any scope preset.
+- `MimeTypeMatcher` — internal MIME-based filter with case-insensitive matching, charset parameter stripping, and `text/*` prefix matching for `TextContent` scope.
+- 14 unit tests for `MimeTypeMatcher` (all scopes, composability, charset handling, case insensitivity, null safety).
+- 4 unit tests for `CaptureOptions` new properties and fluent API.
 - **WebSocket capture support** — captures WebSocket frames (sent/received) via CDP events and stores them in the Chrome DevTools `_webSocketMessages` HAR extension field for compatibility with Chrome HAR viewers.
 - `HarWebSocketMessage` model with `Type` ("send"/"receive"), `Time` (epoch seconds), `Opcode` (1=text, 2=binary), and `Data` properties.
 - `HarEntry.WebSocketMessages` property (omitted from JSON when null).
@@ -31,6 +37,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Bounded body retrieval concurrency** — replaced unbounded `ConcurrentBag<Task>` with a `Channel<BodyRetrievalRequest>` and 3 worker tasks in `CdpNetworkCaptureStrategy`. This provides predictable CDP load instead of flooding the WebSocket with concurrent `getResponseBody` calls.
+- `ShouldRetrieveResponseBody` now checks MIME type in addition to status code and capture type flags.
+- Removed unused `_responseBodies` field from `CdpNetworkCaptureStrategy`.
 - `HarStreamWriter` internals rewritten from lock-based to channel-based async producer-consumer (`System.Threading.Channels` 8.0.0 dependency added).
 - `HarCaptureSession` and `HarCapture` now implement `IAsyncDisposable` with synchronous `Dispose` preserved as fallback.
 
