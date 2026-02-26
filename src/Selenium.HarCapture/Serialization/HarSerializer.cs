@@ -74,6 +74,8 @@ public static class HarSerializer
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
 
+        EnsureDirectoryExists(filePath);
+
         using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true);
 
         if (IsGzipPath(filePath))
@@ -107,6 +109,8 @@ public static class HarSerializer
         {
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
+
+        EnsureDirectoryExists(filePath);
 
         if (IsGzipPath(filePath))
         {
@@ -204,6 +208,13 @@ public static class HarSerializer
     /// <returns>True if the file path ends with .gz extension (case-insensitive), otherwise false.</returns>
     private static bool IsGzipPath(string filePath)
         => Path.GetExtension(filePath).Equals(".gz", StringComparison.OrdinalIgnoreCase);
+
+    private static void EnsureDirectoryExists(string filePath)
+    {
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+    }
 
     /// <summary>
     /// Creates JsonSerializerOptions configured for HAR serialization.

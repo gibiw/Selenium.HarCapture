@@ -83,6 +83,10 @@ internal sealed class HarStreamWriter : IDisposable, IAsyncDisposable
         _pages = initialPages != null ? new List<HarPage>(initialPages) : new List<HarPage>();
         _logger = logger;
 
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
         _stream = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, bufferSize: 65536);
 
         // Write header: {"log":{"version":"...","creator":{...},"entries":[
