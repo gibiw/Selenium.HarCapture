@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using FluentAssertions;
 using Selenium.HarCapture.Models;
@@ -524,16 +525,16 @@ public sealed class HarSerializerTests
     }
 
     [Fact]
-    public void SaveAsync_CalledSynchronously_WritesCompleteFile()
+    public async Task SaveAsync_CalledSynchronously_WritesCompleteFile()
     {
-        // Arrange - Simulate user's exact pattern: SaveAsync().GetAwaiter().GetResult()
+        // Arrange - Verify SaveAsync writes complete file
         var har = CreateHarWithLargePayload(3, 400_000); // >1MB total
         var tempFile = Path.GetTempFileName();
 
         try
         {
-            // Act - Call async method synchronously (user's pattern)
-            HarSerializer.SaveAsync(har, tempFile).GetAwaiter().GetResult();
+            // Act
+            await HarSerializer.SaveAsync(har, tempFile);
 
             // Assert
             var expectedJson = HarSerializer.Serialize(har);
@@ -630,6 +631,437 @@ public sealed class HarSerializerTests
         // Assert
         act.Should().Throw<FileNotFoundException>()
             .WithMessage($"*{nonExistentPath}*");
+    }
+
+    // Compression tests
+
+    [Fact]
+    public async Task SaveAsync_GzExtension_CompressesFile()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            await HarSerializer.SaveAsync(har, tempFile);
+
+            // Assert
+            File.Exists(tempFile).Should().BeTrue("file should be created");
+            var fileBytes = File.ReadAllBytes(tempFile);
+            fileBytes.Length.Should().BeGreaterThan(2, "file should contain data");
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic number");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic number");
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public void Save_GzExtension_CompressesFile()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            HarSerializer.Save(har, tempFile);
+
+            // Assert
+            File.Exists(tempFile).Should().BeTrue("file should be created");
+            var fileBytes = File.ReadAllBytes(tempFile);
+            fileBytes.Length.Should().BeGreaterThan(2, "file should contain data");
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic number");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic number");
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_GzExtension_DecompressesFile()
+    {
+        // Arrange
+        var original = CreateMinimalHar();
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Manually create compressed file
+            var json = HarSerializer.Serialize(original);
+            using (var fileStream = new FileStream(gzPath, FileMode.Create))
+            using (var gzipStream = new GZipStream(fileStream, CompressionMode.Compress))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                gzipStream.Write(bytes, 0, bytes.Length);
+            }
+
+            // Act
+            var loaded = await HarSerializer.LoadAsync(gzPath);
+
+            // Assert
+            loaded.Should().NotBeNull();
+            loaded.Log.Version.Should().Be(original.Log.Version);
+            loaded.Log.Creator.Name.Should().Be(original.Log.Creator.Name);
+        }
+        finally
+        {
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void Load_GzExtension_DecompressesFile()
+    {
+        // Arrange
+        var original = CreateMinimalHar();
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Manually create compressed file
+            var json = HarSerializer.Serialize(original);
+            using (var fileStream = new FileStream(gzPath, FileMode.Create))
+            using (var gzipStream = new GZipStream(fileStream, CompressionMode.Compress))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                gzipStream.Write(bytes, 0, bytes.Length);
+            }
+
+            // Act
+            var loaded = HarSerializer.Load(gzPath);
+
+            // Assert
+            loaded.Should().NotBeNull();
+            loaded.Log.Version.Should().Be(original.Log.Version);
+            loaded.Log.Creator.Name.Should().Be(original.Log.Creator.Name);
+        }
+        finally
+        {
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SaveLoad_Compressed_RoundTrip_PreservesData()
+    {
+        // Arrange
+        var original = CreateSampleHar();
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            await HarSerializer.SaveAsync(original, tempFile);
+            var loaded = await HarSerializer.LoadAsync(tempFile);
+
+            // Assert
+            loaded.Should().BeEquivalentTo(original, options => options
+                .Using<DateTimeOffset>(ctx => ctx.Subject.Should().BeCloseTo(ctx.Expectation, TimeSpan.FromMilliseconds(1)))
+                .WhenTypeIs<DateTimeOffset>());
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
+    [Fact]
+    public void Compressed_File_IsSmallerThanOriginal()
+    {
+        // Arrange
+        var har = CreateHarWithLargePayload(3, 100_000);
+        var harPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        var gzPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har.gz");
+
+        try
+        {
+            // Act
+            HarSerializer.Save(har, harPath);
+            HarSerializer.Save(har, gzPath);
+
+            // Assert
+            var harFileInfo = new FileInfo(harPath);
+            var gzFileInfo = new FileInfo(gzPath);
+
+            gzFileInfo.Length.Should().BeLessThan(harFileInfo.Length,
+                "compressed .gz file should be smaller than uncompressed .har file");
+        }
+        finally
+        {
+            if (File.Exists(harPath))
+            {
+                File.Delete(harPath);
+            }
+            if (File.Exists(gzPath))
+            {
+                File.Delete(gzPath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SaveAsync_CreatesDirectoryIfNotExists()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString(), "sub", "dir");
+        var filePath = Path.Combine(tempDir, "test.har");
+
+        try
+        {
+            // Act
+            await HarSerializer.SaveAsync(har, filePath);
+
+            // Assert
+            File.Exists(filePath).Should().BeTrue("file should be created in auto-created directory");
+        }
+        finally
+        {
+            // Clean up the top-level temp directory
+            var root = Path.Combine(Path.GetTempPath(), Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(filePath)!)!)!));
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Save_CreatesDirectoryIfNotExists()
+    {
+        // Arrange
+        var har = CreateMinimalHar();
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString(), "sub", "dir");
+        var filePath = Path.Combine(tempDir, "test.har");
+
+        try
+        {
+            // Act
+            HarSerializer.Save(har, filePath);
+
+            // Assert
+            File.Exists(filePath).Should().BeTrue("file should be created in auto-created directory");
+        }
+        finally
+        {
+            var root = Path.Combine(Path.GetTempPath(), Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(filePath)!)!)!));
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    // WebSocket serialization tests
+
+    [Fact]
+    public void Serialize_EntryWithNullWebSocketMessages_OmitsField()
+    {
+        // Arrange
+        var har = new Har
+        {
+            Log = new HarLog
+            {
+                Version = "1.2",
+                Creator = new HarCreator { Name = "Test", Version = "1.0" },
+                Entries = new List<HarEntry>
+                {
+                    new HarEntry
+                    {
+                        StartedDateTime = DateTimeOffset.UtcNow,
+                        Time = 100,
+                        Request = new HarRequest
+                        {
+                            Method = "GET",
+                            Url = "https://example.com",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            QueryString = new List<HarQueryString>(),
+                            HeadersSize = -1,
+                            BodySize = 0
+                        },
+                        Response = new HarResponse
+                        {
+                            Status = 200,
+                            StatusText = "OK",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            Content = new HarContent { Size = 0, MimeType = "text/html" },
+                            RedirectURL = "",
+                            HeadersSize = -1,
+                            BodySize = -1
+                        },
+                        Cache = new HarCache(),
+                        Timings = new HarTimings { Send = 1, Wait = 50, Receive = 49 },
+                        WebSocketMessages = null
+                    }
+                }
+            }
+        };
+
+        // Act
+        var json = HarSerializer.Serialize(har, writeIndented: false);
+
+        // Assert
+        json.Should().NotContain("_webSocketMessages",
+            "null WebSocketMessages should be omitted from JSON");
+    }
+
+    [Fact]
+    public void Serialize_Deserialize_WebSocketMessages_RoundTrip()
+    {
+        // Arrange
+        var wsMessages = new List<HarWebSocketMessage>
+        {
+            new HarWebSocketMessage { Type = "send", Time = 1700000001.0, Opcode = 1, Data = "hello" },
+            new HarWebSocketMessage { Type = "receive", Time = 1700000002.0, Opcode = 1, Data = "world" },
+            new HarWebSocketMessage { Type = "send", Time = 1700000003.0, Opcode = 2, Data = "binary" }
+        };
+
+        var har = new Har
+        {
+            Log = new HarLog
+            {
+                Version = "1.2",
+                Creator = new HarCreator { Name = "Test", Version = "1.0" },
+                Entries = new List<HarEntry>
+                {
+                    new HarEntry
+                    {
+                        StartedDateTime = DateTimeOffset.UtcNow,
+                        Time = 100,
+                        Request = new HarRequest
+                        {
+                            Method = "GET",
+                            Url = "wss://example.com/socket",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            QueryString = new List<HarQueryString>(),
+                            HeadersSize = -1,
+                            BodySize = 0
+                        },
+                        Response = new HarResponse
+                        {
+                            Status = 101,
+                            StatusText = "Switching Protocols",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            Content = new HarContent { Size = 0, MimeType = "x-unknown" },
+                            RedirectURL = "",
+                            HeadersSize = -1,
+                            BodySize = 0
+                        },
+                        Cache = new HarCache(),
+                        Timings = new HarTimings { Send = 0, Wait = 0, Receive = 0 },
+                        WebSocketMessages = wsMessages
+                    }
+                }
+            }
+        };
+
+        // Act
+        var json = HarSerializer.Serialize(har);
+        var deserialized = HarSerializer.Deserialize(json);
+
+        // Assert
+        deserialized.Log.Entries[0].WebSocketMessages.Should().NotBeNull();
+        deserialized.Log.Entries[0].WebSocketMessages.Should().HaveCount(3);
+
+        var msgs = deserialized.Log.Entries[0].WebSocketMessages!;
+        msgs[0].Type.Should().Be("send");
+        msgs[0].Data.Should().Be("hello");
+        msgs[0].Opcode.Should().Be(1);
+        msgs[1].Type.Should().Be("receive");
+        msgs[2].Opcode.Should().Be(2);
+    }
+
+    [Fact]
+    public void Serialize_WebSocketMessages_UsesCorrectFieldName()
+    {
+        // Arrange — verify Chrome DevTools format compatibility
+        var har = new Har
+        {
+            Log = new HarLog
+            {
+                Version = "1.2",
+                Creator = new HarCreator { Name = "Test", Version = "1.0" },
+                Entries = new List<HarEntry>
+                {
+                    new HarEntry
+                    {
+                        StartedDateTime = DateTimeOffset.UtcNow,
+                        Time = 0,
+                        Request = new HarRequest
+                        {
+                            Method = "GET",
+                            Url = "wss://example.com",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            QueryString = new List<HarQueryString>(),
+                            HeadersSize = -1,
+                            BodySize = 0
+                        },
+                        Response = new HarResponse
+                        {
+                            Status = 101,
+                            StatusText = "Switching Protocols",
+                            HttpVersion = "HTTP/1.1",
+                            Cookies = new List<HarCookie>(),
+                            Headers = new List<HarHeader>(),
+                            Content = new HarContent { Size = 0, MimeType = "x-unknown" },
+                            RedirectURL = "",
+                            HeadersSize = -1,
+                            BodySize = 0
+                        },
+                        Cache = new HarCache(),
+                        Timings = new HarTimings { Send = 0, Wait = 0, Receive = 0 },
+                        WebSocketMessages = new List<HarWebSocketMessage>
+                        {
+                            new HarWebSocketMessage { Type = "send", Time = 1.0, Opcode = 1, Data = "test" }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Act
+        var json = HarSerializer.Serialize(har, writeIndented: false);
+
+        // Assert — Chrome DevTools uses _webSocketMessages with "type" values "send"/"receive"
+        json.Should().Contain("\"_webSocketMessages\"",
+            "field name should match Chrome DevTools format");
+        json.Should().Contain("\"type\":\"send\"",
+            "type value should be 'send' or 'receive' per Chrome format");
+        json.Should().Contain("\"opcode\":1",
+            "opcode should be present per Chrome format");
     }
 
     // Helper methods

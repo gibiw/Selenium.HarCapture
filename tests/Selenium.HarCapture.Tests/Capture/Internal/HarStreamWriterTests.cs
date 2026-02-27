@@ -11,7 +11,7 @@ using Xunit;
 
 namespace Selenium.HarCapture.Tests.Capture.Internal;
 
-public sealed class HarStreamWriterTests : IDisposable
+public sealed class HarStreamWriterTests : IDisposable, IAsyncLifetime
 {
     private readonly string _tempDir;
 
@@ -20,6 +20,10 @@ public sealed class HarStreamWriterTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), $"HarStreamWriterTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     public void Dispose()
     {
@@ -80,14 +84,15 @@ public sealed class HarStreamWriterTests : IDisposable
     }
 
     [Fact]
-    public void WriteEntry_SingleEntry_ProducesValidHar()
+    public async Task WriteEntry_SingleEntry_ProducesValidHar()
     {
         var path = TempFile();
         var entry = CreateEntry("https://example.com/api");
 
-        using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
         {
             writer.WriteEntry(entry);
+            await writer.WaitForConsumerAsync();
             writer.Count.Should().Be(1);
         }
 
@@ -97,17 +102,18 @@ public sealed class HarStreamWriterTests : IDisposable
     }
 
     [Fact]
-    public void WriteEntry_MultipleEntries_ProducesValidHar()
+    public async Task WriteEntry_MultipleEntries_ProducesValidHar()
     {
         var path = TempFile();
 
-        using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
         {
             for (int i = 0; i < 10; i++)
             {
                 writer.WriteEntry(CreateEntry($"https://example.com/{i}", 200 + i));
             }
 
+            await writer.WaitForConsumerAsync();
             writer.Count.Should().Be(10);
         }
 
@@ -119,7 +125,7 @@ public sealed class HarStreamWriterTests : IDisposable
     }
 
     [Fact]
-    public void AlwaysValid_FileIsValidAfterEachEntry_WithoutComplete()
+    public async Task AlwaysValid_FileIsValidAfterEachEntry_WithoutComplete()
     {
         var path = TempFile();
 
@@ -130,6 +136,7 @@ public sealed class HarStreamWriterTests : IDisposable
         for (int i = 1; i <= 5; i++)
         {
             writer.WriteEntry(CreateEntry($"https://example.com/{i}"));
+            await writer.WaitForConsumerAsync();
 
             // Read the file while writer still holds it (via FileShare.Read on writer's stream)
             var content = File.ReadAllText(path);
@@ -137,7 +144,7 @@ public sealed class HarStreamWriterTests : IDisposable
             har.Log.Entries.Should().HaveCount(i, $"after writing {i} entries the file should be valid with {i} entries");
         }
 
-        writer.Dispose();
+        await writer.DisposeAsync();
     }
 
     [Fact]
@@ -171,7 +178,7 @@ public sealed class HarStreamWriterTests : IDisposable
         var har = HarSerializer.Load(path);
         har.Log.Entries.Should().HaveCount(2);
         har.Log.Pages.Should().HaveCount(2);
-        har.Log.Pages[0].Id.Should().Be("page1");
+        har.Log.Pages![0].Id.Should().Be("page1");
         har.Log.Pages[1].Id.Should().Be("page2");
     }
 
@@ -197,7 +204,7 @@ public sealed class HarStreamWriterTests : IDisposable
 
         var har = HarSerializer.Load(path);
         har.Log.Pages.Should().HaveCount(1);
-        har.Log.Pages[0].Id.Should().Be("init");
+        har.Log.Pages![0].Id.Should().Be("init");
         har.Log.Entries.Should().HaveCount(1);
     }
 
@@ -219,13 +226,13 @@ public sealed class HarStreamWriterTests : IDisposable
     }
 
     [Fact]
-    public void ConcurrentWriteEntry_AllEntriesPresent()
+    public async Task ConcurrentWriteEntry_AllEntriesPresent()
     {
         var path = TempFile();
         const int threadCount = 8;
         const int entriesPerThread = 50;
 
-        using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
         {
             var barrier = new Barrier(threadCount);
             var threads = new Thread[threadCount];
@@ -247,6 +254,7 @@ public sealed class HarStreamWriterTests : IDisposable
             foreach (var thread in threads)
                 thread.Join();
 
+            await writer.WaitForConsumerAsync();
             writer.Count.Should().Be(threadCount * entriesPerThread);
         }
 
@@ -323,5 +331,102 @@ public sealed class HarStreamWriterTests : IDisposable
         var har = HarSerializer.Load(path);
         har.Log.Entries.Should().HaveCount(1);
         har.Log.Pages.Should().HaveCount(2);
+    }
+
+    // ========== New Async Tests (Phase 10) ==========
+
+    [Fact]
+    public async Task DisposeAsync_DrainsRemainingEntries()
+    {
+        var path = TempFile();
+
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                writer.WriteEntry(CreateEntry($"https://example.com/{i}"));
+            }
+            // DisposeAsync should drain all posted entries
+        }
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(100, "all entries should be drained on async disposal");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_HighTraffic_NoEntryLoss()
+    {
+        var path = TempFile();
+        const int threadCount = 10;
+        const int entriesPerThread = 100;
+        const int totalExpected = threadCount * entriesPerThread;
+
+        await using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            var tasks = new Task[threadCount];
+            for (int t = 0; t < threadCount; t++)
+            {
+                var threadId = t;
+                tasks[t] = Task.Run(() =>
+                {
+                    for (int i = 0; i < entriesPerThread; i++)
+                    {
+                        writer.WriteEntry(CreateEntry($"https://example.com/t{threadId}/e{i}"));
+                    }
+                });
+            }
+
+            await Task.WhenAll(tasks);
+            // DisposeAsync should drain all entries from channel
+        }
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(totalExpected, "no entries should be lost under high traffic");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CalledTwice_DoesNotThrow()
+    {
+        var path = TempFile();
+        var writer = new HarStreamWriter(path, "1.2", DefaultCreator);
+
+        writer.WriteEntry(CreateEntry());
+
+        await writer.DisposeAsync();
+        await writer.DisposeAsync(); // Should be idempotent
+
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task WriteEntry_AfterDisposeAsync_ThrowsObjectDisposedException()
+    {
+        var path = TempFile();
+        var writer = new HarStreamWriter(path, "1.2", DefaultCreator);
+
+        await writer.DisposeAsync();
+
+        var act = () => writer.WriteEntry(CreateEntry());
+        act.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public void Dispose_Synchronous_CompletesWithoutDeadlock()
+    {
+        var path = TempFile();
+
+        using (var writer = new HarStreamWriter(path, "1.2", DefaultCreator))
+        {
+            for (int i = 0; i < 50; i++)
+            {
+                writer.WriteEntry(CreateEntry($"https://example.com/{i}"));
+            }
+            // Sync Dispose should complete without deadlock (best effort drain)
+        }
+
+        // File should exist and be valid, though some entries might be lost if drain timeout
+        var har = HarSerializer.Load(path);
+        har.Log.Entries.Should().NotBeEmpty("at least some entries should be written");
     }
 }

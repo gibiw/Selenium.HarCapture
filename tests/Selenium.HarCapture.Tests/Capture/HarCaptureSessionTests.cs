@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -371,6 +373,213 @@ public sealed class HarCaptureSessionTests
         session.Should().NotBeNull();
     }
 
+    [Fact]
+    public void Start_WithCapabilitiesDriver_AutoDetectsBrowserInHar()
+    {
+        // Arrange
+        var capabilities = new MockCapabilities();
+        capabilities.Set("browserName", "chrome");
+        capabilities.Set("browserVersion", "142.0");
+        var driver = new MockCapabilitiesDriver { Capabilities = capabilities };
+        var strategy = new MockCaptureStrategy();
+
+        // Simulate what HarCaptureSession(IWebDriver) constructor does:
+        // Extract browser info from driver, then create session with strategy
+        var options = new CaptureOptions();
+        (string? name, string? version) = Selenium.HarCapture.Capture.Internal.BrowserCapabilityExtractor.Extract(driver);
+        if (name != null)
+        {
+            options = options.WithBrowser(name, version ?? "");
+        }
+        var session = new HarCaptureSession(strategy, options);
+
+        // Act
+        session.Start();
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Browser.Should().NotBeNull();
+        har.Log.Browser!.Name.Should().Be("Chrome");
+        har.Log.Browser.Version.Should().Be("142.0");
+    }
+
+    [Fact]
+    public void Start_WithBrowserOverride_UsesOverrideInsteadOfAutoDetection()
+    {
+        // Arrange
+        var capabilities = new MockCapabilities();
+        capabilities.Set("browserName", "chrome");
+        capabilities.Set("browserVersion", "142.0");
+        var driver = new MockCapabilitiesDriver { Capabilities = capabilities };
+        var strategy = new MockCaptureStrategy();
+
+        // Options with override - override should take precedence
+        var options = new CaptureOptions().WithBrowser("Custom", "9.9");
+        var session = new HarCaptureSession(strategy, options);
+
+        // Act
+        session.Start();
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Browser.Should().NotBeNull();
+        har.Log.Browser!.Name.Should().Be("Custom");
+        har.Log.Browser.Version.Should().Be("9.9");
+    }
+
+    [Fact]
+    public void Start_WithoutCapabilities_OmitsBrowserFromHar()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+
+        // Act
+        session.Start();
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Browser.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithStreamingAndCompression_CompressesOutputFile()
+    {
+        // Arrange
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        try
+        {
+            var strategy = new MockCaptureStrategy();
+            var options = new CaptureOptions()
+                .WithOutputFile(tempFile)
+                .WithCompression();
+            var session = new HarCaptureSession(strategy, options);
+
+            await session.StartAsync("page1", "Test Page");
+
+            // Simulate an entry via strategy
+            strategy.SimulateEntry(new HarEntry
+            {
+                StartedDateTime = DateTimeOffset.UtcNow,
+                Time = 100,
+                Request = new HarRequest
+                {
+                    Method = "GET",
+                    Url = "https://example.com",
+                    HttpVersion = "HTTP/1.1",
+                    Cookies = new List<HarCookie>(),
+                    Headers = new List<HarHeader>(),
+                    QueryString = new List<HarQueryString>(),
+                    HeadersSize = -1,
+                    BodySize = 0
+                },
+                Response = new HarResponse
+                {
+                    Status = 200,
+                    StatusText = "OK",
+                    HttpVersion = "HTTP/1.1",
+                    Cookies = new List<HarCookie>(),
+                    Headers = new List<HarHeader>(),
+                    Content = new HarContent { Size = 0, MimeType = "text/html" },
+                    RedirectURL = "",
+                    HeadersSize = -1,
+                    BodySize = -1
+                },
+                Cache = new HarCache(),
+                Timings = new HarTimings { Send = 1, Wait = 50, Receive = 49 }
+            }, "req1");
+
+            // Allow consumer to process
+            await Task.Delay(200);
+
+            // Act
+            await session.StopAsync();
+
+            // Assert — .gz file should exist, original .har should be deleted
+            var gzFile = tempFile + ".gz";
+            File.Exists(gzFile).Should().BeTrue("compressed file should exist");
+            File.Exists(tempFile).Should().BeFalse("original uncompressed file should be deleted");
+
+            // Verify gzip magic bytes
+            var fileBytes = File.ReadAllBytes(gzFile);
+            fileBytes.Length.Should().BeGreaterThan(2);
+            fileBytes[0].Should().Be(0x1F, "first byte should be gzip magic");
+            fileBytes[1].Should().Be(0x8B, "second byte should be gzip magic");
+
+            // Verify content can be decompressed
+            using var fileStream = new FileStream(gzFile, FileMode.Open, FileAccess.Read);
+            using var gzipStream = new GZipStream(fileStream, CompressionMode.Decompress);
+            using var reader = new StreamReader(gzipStream);
+            var json = await reader.ReadToEndAsync();
+            json.Should().Contain("\"log\"");
+            json.Should().Contain("\"entries\"");
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+            if (File.Exists(tempFile + ".gz")) File.Delete(tempFile + ".gz");
+        }
+    }
+
+    private class MockCapabilitiesDriver : IWebDriver, IHasCapabilities
+    {
+        public ICapabilities Capabilities { get; set; } = null!;
+
+        public string Url
+        {
+            get => throw new NotImplementedException();
+            set => throw new NotImplementedException();
+        }
+
+        public string Title => throw new NotImplementedException();
+
+        public string PageSource => throw new NotImplementedException();
+
+        public string CurrentWindowHandle => throw new NotImplementedException();
+
+        public ReadOnlyCollection<string> WindowHandles => throw new NotImplementedException();
+
+        public void Close()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Quit()
+        {
+            throw new NotImplementedException();
+        }
+
+        public IOptions Manage()
+        {
+            throw new NotImplementedException();
+        }
+
+        public INavigation Navigate()
+        {
+            throw new NotImplementedException();
+        }
+
+        public ITargetLocator SwitchTo()
+        {
+            throw new NotImplementedException();
+        }
+
+        public IWebElement FindElement(By by)
+        {
+            throw new NotImplementedException();
+        }
+
+        public ReadOnlyCollection<IWebElement> FindElements(By by)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Dispose()
+        {
+            // No-op
+        }
+    }
+
     private static HarEntry CreateTestEntry(string url = "https://example.com/page")
     {
         return new HarEntry
@@ -420,17 +629,14 @@ public sealed class HarCaptureSessionTests
         public bool SupportsDetailedTimings => true;
         public bool SupportsResponseBody => true;
         public event Action<HarEntry, string>? EntryCompleted;
-        private bool _started;
 
         public Task StartAsync(CaptureOptions options)
         {
-            _started = true;
             return Task.CompletedTask;
         }
 
         public Task StopAsync()
         {
-            _started = false;
             return Task.CompletedTask;
         }
 
@@ -586,6 +792,30 @@ public sealed class HarCaptureSessionTests
         public void CloseDevToolsSession()
         {
             // No-op
+        }
+    }
+
+    private class MockCapabilities : ICapabilities
+    {
+        private readonly Dictionary<string, object?> _caps = new();
+
+        public void Set(string key, object? value) => _caps[key] = value;
+
+        public object this[string capabilityName] => GetCapability(capabilityName)!;
+
+        public object? GetCapability(string capabilityName)
+        {
+            return _caps.TryGetValue(capabilityName, out var value) ? value : null;
+        }
+
+        public bool HasCapability(string capabilityName)
+        {
+            return _caps.ContainsKey(capabilityName);
+        }
+
+        public IDictionary<string, object> ToDictionary()
+        {
+            throw new NotImplementedException();
         }
     }
 }

@@ -140,6 +140,43 @@ public sealed class CaptureOptions
     public string? LogFilePath { get; set; }
 
     /// <summary>
+    /// Gets or sets the browser name to use in HAR metadata.
+    /// When set, overrides auto-detected browser name from WebDriver capabilities.
+    /// Default is null (auto-detect from driver).
+    /// </summary>
+    public string? BrowserName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the browser version to use in HAR metadata.
+    /// When set, overrides auto-detected browser version from WebDriver capabilities.
+    /// Default is null (auto-detect from driver).
+    /// </summary>
+    public string? BrowserVersion { get; set; }
+
+    /// <summary>
+    /// Gets or sets which response bodies to retrieve via CDP.
+    /// Limiting body retrieval reduces CDP WebSocket contention and improves navigation speed.
+    /// Default is <see cref="ResponseBodyScope.All"/> (backward compatible — retrieve all bodies).
+    /// </summary>
+    public ResponseBodyScope ResponseBodyScope { get; set; } = ResponseBodyScope.All;
+
+    /// <summary>
+    /// Gets or sets additional MIME types for body retrieval, additive to <see cref="ResponseBodyScope"/> preset.
+    /// For example, with <see cref="Capture.ResponseBodyScope.PagesAndApi"/> scope and filter ["image/png"],
+    /// both HTML/JSON and PNG bodies are retrieved.
+    /// Default is null (no extra types).
+    /// </summary>
+    public IReadOnlyList<string>? ResponseBodyMimeFilter { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether to enable gzip compression for the output file.
+    /// When true in streaming mode (WithOutputFile), the HAR file is compressed to .gz format
+    /// at finalization time after all entries are written.
+    /// Default is false (no compression).
+    /// </summary>
+    public bool EnableCompression { get; set; } = false;
+
+    /// <summary>
     /// Sets the output file path for streaming HAR capture.
     /// Entries will be written incrementally to the file, keeping it always valid.
     /// </summary>
@@ -169,6 +206,64 @@ public sealed class CaptureOptions
     public CaptureOptions WithLogFile(string path)
     {
         LogFilePath = path;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the browser name and version to use in HAR metadata, overriding auto-detection.
+    /// </summary>
+    /// <param name="name">The browser name (e.g., "Chrome", "Firefox").</param>
+    /// <param name="version">The browser version string.</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithBrowser(string name, string version)
+    {
+        BrowserName = name;
+        BrowserVersion = version;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables WebSocket frame capture by adding the <see cref="CaptureType.WebSocket"/> flag.
+    /// Requires CDP strategy (Chrome/Edge). INetwork strategy silently ignores this flag.
+    /// </summary>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithWebSocketCapture()
+    {
+        CaptureTypes |= CaptureType.WebSocket;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets which response bodies to retrieve via CDP.
+    /// </summary>
+    /// <param name="scope">The body retrieval scope.</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithResponseBodyScope(ResponseBodyScope scope)
+    {
+        ResponseBodyScope = scope;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets additional MIME types for body retrieval, additive to <see cref="ResponseBodyScope"/> preset.
+    /// </summary>
+    /// <param name="mimeTypes">Extra MIME types to retrieve (e.g., "image/png", "image/svg+xml").</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithResponseBodyMimeFilter(params string[] mimeTypes)
+    {
+        ResponseBodyMimeFilter = mimeTypes;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables gzip compression for the output file.
+    /// In streaming mode, compression happens at finalization after all entries are written.
+    /// The output file path will have .gz appended if it doesn't already end with .gz.
+    /// </summary>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithCompression()
+    {
+        EnableCompression = true;
         return this;
     }
 }

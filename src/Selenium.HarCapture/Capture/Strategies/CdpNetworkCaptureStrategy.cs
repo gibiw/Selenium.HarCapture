@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Web;
 using OpenQA.Selenium;
@@ -27,9 +29,13 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     private ICdpNetworkAdapter? _adapter;
     private CaptureOptions _options = null!;
     private readonly RequestResponseCorrelator _correlator = new();
-    private readonly ConcurrentDictionary<string, ResponseBodyInfo> _responseBodies = new();
-    private ConcurrentBag<Task> _pendingBodyTasks = new();
+    private readonly ConcurrentDictionary<string, ResponseBodyInfo> _bodyCache = new();
+    private Channel<BodyRetrievalRequest>? _bodyChannel;
+    private Task[]? _bodyWorkers;
+    private const int BodyWorkerCount = 3;
     private UrlPatternMatcher? _urlMatcher;
+    private MimeTypeMatcher? _mimeMatcher;
+    private WebSocketFrameAccumulator? _wsAccumulator;
     private bool _disposed;
 
     /// <summary>
@@ -77,11 +83,40 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         // Initialize URL matcher for filtering
         _urlMatcher = new UrlPatternMatcher(options.UrlIncludePatterns, options.UrlExcludePatterns);
 
+        // Initialize MIME type matcher for body retrieval filtering
+        _mimeMatcher = MimeTypeMatcher.FromScope(options.ResponseBodyScope, options.ResponseBodyMimeFilter);
+
+        // Create bounded channel + worker tasks for body retrieval
+        _bodyChannel = Channel.CreateBounded<BodyRetrievalRequest>(new BoundedChannelOptions(500)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = false,
+            SingleWriter = false
+        });
+        _bodyWorkers = new Task[BodyWorkerCount];
+        for (int i = 0; i < BodyWorkerCount; i++)
+        {
+            _bodyWorkers[i] = BodyWorkerLoop(_bodyChannel.Reader);
+        }
+
         // Subscribe to adapter events BEFORE enabling (critical order)
         _adapter.RequestWillBeSent += OnRequestWillBeSent;
         _adapter.ResponseReceived += OnResponseReceived;
         _adapter.LoadingFinished += OnLoadingFinished;
         _adapter.LoadingFailed += OnLoadingFailed;
+
+        // Subscribe to WebSocket events if WebSocket capture is enabled
+        if ((options.CaptureTypes & CaptureType.WebSocket) != 0)
+        {
+            _wsAccumulator = new WebSocketFrameAccumulator();
+            _adapter.WebSocketCreated += OnWebSocketCreated;
+            _adapter.WebSocketWillSendHandshakeRequest += OnWebSocketWillSendHandshakeRequest;
+            _adapter.WebSocketHandshakeResponseReceived += OnWebSocketHandshakeResponseReceived;
+            _adapter.WebSocketFrameSent += OnWebSocketFrameSent;
+            _adapter.WebSocketFrameReceived += OnWebSocketFrameReceived;
+            _adapter.WebSocketClosed += OnWebSocketClosed;
+            _logger?.Log("CDP", "WebSocket capture enabled");
+        }
 
         // Enable Network domain
         await _adapter.EnableNetworkAsync().ConfigureAwait(false);
@@ -102,21 +137,32 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             _adapter.LoadingFinished -= OnLoadingFinished;
             _adapter.LoadingFailed -= OnLoadingFailed;
 
-            // Wait for all in-flight body retrievals to complete (with timeout)
-            var tasks = _pendingBodyTasks.ToArray();
-            if (tasks.Length > 0)
+            // Unsubscribe from WebSocket events
+            if (_wsAccumulator != null)
             {
-                _logger?.Log("CDP", $"StopAsync: waiting for {tasks.Length} pending body tasks");
-                var allTasks = Task.WhenAll(tasks);
-                var completed = await Task.WhenAny(allTasks, Task.Delay(StopTimeoutMs)).ConfigureAwait(false);
-                if (completed == allTasks)
+                _adapter.WebSocketCreated -= OnWebSocketCreated;
+                _adapter.WebSocketWillSendHandshakeRequest -= OnWebSocketWillSendHandshakeRequest;
+                _adapter.WebSocketHandshakeResponseReceived -= OnWebSocketHandshakeResponseReceived;
+                _adapter.WebSocketFrameSent -= OnWebSocketFrameSent;
+                _adapter.WebSocketFrameReceived -= OnWebSocketFrameReceived;
+                _adapter.WebSocketClosed -= OnWebSocketClosed;
+            }
+
+            // Complete channel and wait for workers to drain (with timeout)
+            _bodyChannel?.Writer.TryComplete();
+            if (_bodyWorkers != null)
+            {
+                _logger?.Log("CDP", $"StopAsync: waiting for {BodyWorkerCount} body workers to drain");
+                var allWorkers = Task.WhenAll(_bodyWorkers);
+                var completed = await Task.WhenAny(allWorkers, Task.Delay(StopTimeoutMs)).ConfigureAwait(false);
+                if (completed == allWorkers)
                 {
-                    await allTasks.ConfigureAwait(false);
-                    _logger?.Log("CDP", "StopAsync: all body tasks completed");
+                    await allWorkers.ConfigureAwait(false);
+                    _logger?.Log("CDP", "StopAsync: all body workers completed");
                 }
                 else
                 {
-                    _logger?.Log("CDP", $"StopAsync: body tasks timed out after {StopTimeoutMs / 1000}s, proceeding without remaining bodies");
+                    _logger?.Log("CDP", $"StopAsync: body workers timed out after {StopTimeoutMs / 1000}s, proceeding without remaining bodies");
                 }
             }
 
@@ -140,9 +186,25 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             }
         }
 
-        _pendingBodyTasks = new ConcurrentBag<Task>();
+        // Flush all unclosed WebSocket connections
+        if (_wsAccumulator != null)
+        {
+            var activeWsIds = _wsAccumulator.GetActiveRequestIds();
+            if (activeWsIds.Count > 0)
+            {
+                _logger?.Log("CDP", $"StopAsync: flushing {activeWsIds.Count} unclosed WebSocket connections");
+                foreach (var wsId in activeWsIds)
+                {
+                    FlushWebSocket(wsId);
+                }
+            }
+        }
+
+        _bodyChannel = null;
+        _bodyWorkers = null;
         _correlator.Clear();
-        _responseBodies.Clear();
+        _bodyCache.Clear();
+        _wsAccumulator?.Clear();
     }
 
     /// <summary>
@@ -154,6 +216,13 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         try
         {
             _logger?.Log("CDP", $"RequestWillBeSent: id={e.RequestId}, {e.Request.Method} {e.Request.Url}");
+
+            // Suppress normal HTTP flow for WebSocket requests
+            if (_wsAccumulator != null && _wsAccumulator.IsWebSocket(e.RequestId))
+            {
+                _logger?.Log("CDP", $"Request suppressed (WebSocket): id={e.RequestId}");
+                return;
+            }
 
             // URL filtering
             if (_urlMatcher != null && !_urlMatcher.ShouldCapture(e.Request.Url))
@@ -196,6 +265,13 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         {
             _logger?.Log("CDP", $"ResponseReceived: id={e.RequestId}, status={e.Response.Status}, mime={e.Response.MimeType}");
 
+            // Suppress normal HTTP flow for WebSocket requests
+            if (_wsAccumulator != null && _wsAccumulator.IsWebSocket(e.RequestId))
+            {
+                _logger?.Log("CDP", $"Response suppressed (WebSocket): id={e.RequestId}");
+                return;
+            }
+
             // Build HAR response
             var harResponse = BuildHarResponse(e.Response);
 
@@ -223,7 +299,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             }
 
             // Correlate response with request
-            var entry = _correlator.OnResponseReceived(e.RequestId, harResponse, harTimings, totalTime);
+            var entry = _correlator.OnResponseReceived(e.RequestId, harResponse, harTimings, totalTime, e.Type);
 
             if (entry == null)
             {
@@ -232,7 +308,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             else
             {
                 // Determine if we should retrieve response body
-                bool shouldGetBody = ShouldRetrieveResponseBody(e.Response.Status);
+                bool shouldGetBody = ShouldRetrieveResponseBody(e.Response.Status, e.Response.MimeType);
 
                 if (!shouldGetBody)
                 {
@@ -242,7 +318,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                     }
                     else
                     {
-                        _logger?.Log("CDP", "Body retrieval: skip (content capture disabled)");
+                        _logger?.Log("CDP", $"Body retrieval: skip (mime={e.Response.MimeType})");
                     }
 
                     // No body needed, fire EntryCompleted immediately
@@ -251,10 +327,9 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 }
                 else
                 {
-                    _logger?.Log("CDP", $"Body retrieval: starting async for id={e.RequestId}");
-                    // Track async body retrieval task to ensure completion before StopAsync
-                    var task = RetrieveResponseBodyAsync(e.RequestId, entry);
-                    _pendingBodyTasks.Add(task);
+                    _logger?.Log("CDP", $"Body retrieval: queued for id={e.RequestId}");
+                    // Queue body retrieval to bounded channel — workers process concurrently.
+                    _bodyChannel?.Writer.TryWrite(new BodyRetrievalRequest(e.RequestId, entry));
                 }
             }
         }
@@ -289,6 +364,107 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         // For now, silently drop failed requests.
     }
 
+    private void OnWebSocketCreated(CdpWebSocketCreatedData e)
+    {
+        try
+        {
+            _logger?.Log("CDP", $"WebSocketCreated: id={e.RequestId}, url={e.Url}");
+            _wsAccumulator?.OnCreated(e.RequestId, e.Url);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketCreated: {ex.Message}");
+        }
+    }
+
+    private void OnWebSocketWillSendHandshakeRequest(CdpWebSocketHandshakeRequestData e)
+    {
+        try
+        {
+            _logger?.Log("CDP", $"WebSocketHandshakeRequest: id={e.RequestId}");
+            _wsAccumulator?.OnHandshakeRequest(e.RequestId, e.Timestamp, e.WallTime, e.Headers);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketWillSendHandshakeRequest: {ex.Message}");
+        }
+    }
+
+    private void OnWebSocketHandshakeResponseReceived(CdpWebSocketHandshakeResponseData e)
+    {
+        try
+        {
+            _logger?.Log("CDP", $"WebSocketHandshakeResponse: id={e.RequestId}, status={e.Status}");
+            _wsAccumulator?.OnHandshakeResponse(e.RequestId, e.Timestamp, e.Status, e.StatusText, e.Headers);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketHandshakeResponseReceived: {ex.Message}");
+        }
+    }
+
+    private void OnWebSocketFrameSent(CdpWebSocketFrameData e)
+    {
+        try
+        {
+            _wsAccumulator?.AddFrame(e.RequestId, "send", e.Timestamp, e.Opcode, e.PayloadData);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketFrameSent: {ex.Message}");
+        }
+    }
+
+    private void OnWebSocketFrameReceived(CdpWebSocketFrameData e)
+    {
+        try
+        {
+            _wsAccumulator?.AddFrame(e.RequestId, "receive", e.Timestamp, e.Opcode, e.PayloadData);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketFrameReceived: {ex.Message}");
+        }
+    }
+
+    private void OnWebSocketClosed(CdpWebSocketClosedData e)
+    {
+        try
+        {
+            _logger?.Log("CDP", $"WebSocketClosed: id={e.RequestId}");
+            FlushWebSocket(e.RequestId);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"Error in OnWebSocketClosed: {ex.Message}");
+        }
+    }
+
+    private void FlushWebSocket(string requestId)
+    {
+        var result = _wsAccumulator?.Flush(requestId);
+        if (result == null)
+            return;
+
+        var (baseEntry, frames) = result.Value;
+
+        // Create final entry with WebSocketMessages attached
+        var finalEntry = new HarEntry
+        {
+            StartedDateTime = baseEntry.StartedDateTime,
+            Time = baseEntry.Time,
+            Request = baseEntry.Request,
+            Response = baseEntry.Response,
+            Cache = baseEntry.Cache,
+            Timings = baseEntry.Timings,
+            ResourceType = "websocket",
+            WebSocketMessages = frames
+        };
+
+        _logger?.Log("CDP", $"WebSocket entry completed: id={requestId}, frames={frames.Count}");
+        EntryCompleted?.Invoke(finalEntry, requestId);
+    }
+
     /// <summary>
     /// Completes a redirect entry using the redirect response data.
     /// </summary>
@@ -314,6 +490,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
 
     /// <summary>
     /// Retrieves the response body for a completed request and fires EntryCompleted with updated entry.
+    /// Uses URL-based caching to avoid redundant CDP calls for the same resource across pages.
     /// </summary>
     private async Task RetrieveResponseBodyAsync(string requestId, HarEntry entry)
     {
@@ -325,20 +502,33 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 return;
             }
 
-            var (body, base64Encoded) = await _adapter.GetResponseBodyAsync(requestId).ConfigureAwait(false);
+            string? bodyText;
+            bool base64Encoded;
+            var url = entry.Request.Url;
+
+            // Check body cache — same URL across pages returns identical content,
+            // so we can skip the CDP call and reuse the cached body.
+            if (_bodyCache.TryGetValue(url, out var cached))
+            {
+                bodyText = cached.Body;
+                base64Encoded = cached.Base64Encoded;
+                _logger?.Log("CDP", $"Body from cache: id={requestId}, size={bodyText?.Length ?? 0}");
+            }
+            else
+            {
+                (bodyText, base64Encoded) = await _adapter.GetResponseBodyAsync(requestId).ConfigureAwait(false);
+                _bodyCache[url] = new ResponseBodyInfo { Body = bodyText, Base64Encoded = base64Encoded };
+                _logger?.Log("CDP", $"Body retrieved: id={requestId}, size={bodyText?.Length ?? 0}, base64={base64Encoded}");
+            }
 
             // Check MaxResponseBodySize limit
-            string? bodyText = body;
             string? encoding = base64Encoded ? "base64" : null;
-            long bodySize = body?.Length ?? 0;
-
-            _logger?.Log("CDP", $"Body retrieved: id={requestId}, size={bodySize}, base64={base64Encoded}");
+            long bodySize = bodyText?.Length ?? 0;
 
             if (_options.MaxResponseBodySize > 0 && bodySize > _options.MaxResponseBodySize)
             {
                 _logger?.Log("CDP", $"Body truncated: id={requestId}, original={bodySize}, limit={_options.MaxResponseBodySize}");
-                // Truncate body
-                bodyText = body?.Substring(0, (int)_options.MaxResponseBodySize);
+                bodyText = bodyText?.Substring(0, (int)_options.MaxResponseBodySize);
                 bodySize = _options.MaxResponseBodySize;
             }
 
@@ -372,7 +562,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 PageRef = entry.PageRef,
                 ServerIPAddress = entry.ServerIPAddress,
                 Connection = entry.Connection,
-                Comment = entry.Comment
+                Comment = entry.Comment,
+                ResourceType = entry.ResourceType
             };
 
             EntryCompleted?.Invoke(updatedEntry, requestId);
@@ -388,9 +579,9 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     }
 
     /// <summary>
-    /// Determines whether response body should be retrieved based on status code and capture options.
+    /// Determines whether response body should be retrieved based on status code, MIME type, and capture options.
     /// </summary>
-    private bool ShouldRetrieveResponseBody(long status)
+    private bool ShouldRetrieveResponseBody(long status, string? mimeType)
     {
         // Skip body for 304 (Not Modified) and 204 (No Content)
         if (status == 304 || status == 204)
@@ -403,7 +594,14 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         bool wantsContent = (captureTypes & CaptureType.ResponseContent) != 0 ||
                             (captureTypes & CaptureType.ResponseBinaryContent) != 0;
 
-        return wantsContent;
+        if (!wantsContent)
+            return false;
+
+        // Check MIME type filter
+        if (_mimeMatcher != null && !_mimeMatcher.ShouldRetrieveBody(mimeType))
+            return false;
+
+        return true;
     }
 
     /// <summary>
@@ -562,7 +760,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         try
         {
             // Cookie header format: "name1=value1; name2=value2"
-            var pairs = cookieHeader.Split(';');
+            var pairs = cookieHeader!.Split(';');
             foreach (var pair in pairs)
             {
                 var trimmed = pair.Trim();
@@ -648,6 +846,17 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             _adapter.LoadingFinished -= OnLoadingFinished;
             _adapter.LoadingFailed -= OnLoadingFailed;
 
+            // Unsubscribe from WebSocket events
+            if (_wsAccumulator != null)
+            {
+                _adapter.WebSocketCreated -= OnWebSocketCreated;
+                _adapter.WebSocketWillSendHandshakeRequest -= OnWebSocketWillSendHandshakeRequest;
+                _adapter.WebSocketHandshakeResponseReceived -= OnWebSocketHandshakeResponseReceived;
+                _adapter.WebSocketFrameSent -= OnWebSocketFrameSent;
+                _adapter.WebSocketFrameReceived -= OnWebSocketFrameReceived;
+                _adapter.WebSocketClosed -= OnWebSocketClosed;
+            }
+
             // Try to disable Network domain with timeout to prevent hanging
             try
             {
@@ -667,9 +876,49 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         // Do NOT dispose _session — it's a driver-cached singleton from GetDevToolsSession().
         // The driver owns its lifecycle; disposing it here kills the WebSocket for the entire driver
         // and causes "There is already one outstanding SendAsync call" race conditions.
-        _pendingBodyTasks = new ConcurrentBag<Task>();
+        _bodyChannel?.Writer.TryComplete();
+        _bodyChannel = null;
+        _bodyWorkers = null;
         _correlator.Clear();
-        _responseBodies.Clear();
+        _bodyCache.Clear();
+        _wsAccumulator?.Clear();
+    }
+
+    /// <summary>
+    /// Worker loop that reads body retrieval requests from the channel and processes them sequentially.
+    /// Multiple workers run concurrently, providing bounded parallelism for CDP getResponseBody calls.
+    /// </summary>
+    private async Task BodyWorkerLoop(ChannelReader<BodyRetrievalRequest> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var request))
+                {
+                    await RetrieveResponseBodyAsync(request.RequestId, request.Entry).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"BodyWorkerLoop exited with error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Request to retrieve the response body for a specific request.
+    /// </summary>
+    private readonly struct BodyRetrievalRequest
+    {
+        public string RequestId { get; }
+        public HarEntry Entry { get; }
+
+        public BodyRetrievalRequest(string requestId, HarEntry entry)
+        {
+            RequestId = requestId;
+            Entry = entry;
+        }
     }
 
     /// <summary>

@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 using Selenium.HarCapture.Models;
 using Selenium.HarCapture.Serialization;
 
@@ -17,15 +20,17 @@ namespace Selenium.HarCapture.Capture.Internal;
 /// <remarks>
 /// This eliminates OOM issues caused by serializing a large Har object in memory.
 /// Each entry is serialized directly to the file stream via <see cref="JsonSerializer.Serialize{T}(Stream, T, JsonSerializerOptions)"/>.
-/// Thread-safe via internal locking.
+/// Thread-safe via internal Channel-based producer-consumer pattern.
 /// </remarks>
-internal sealed class HarStreamWriter : IDisposable
+internal sealed class HarStreamWriter : IDisposable, IAsyncDisposable
 {
     private readonly FileStream _stream;
     private readonly JsonSerializerOptions _options;
     private readonly List<HarPage> _pages;
     private readonly FileLogger? _logger;
-    private readonly object _lock = new();
+    private readonly Channel<WriteOperation> _channel;
+    private readonly Task _consumerTask;
+    private readonly CancellationTokenSource _cts;
     private HarBrowser? _browser;
     private string? _comment;
     private long _footerStartPos;
@@ -35,8 +40,31 @@ internal sealed class HarStreamWriter : IDisposable
 
     /// <summary>
     /// Gets the number of entries written so far.
+    /// Note: This count reflects entries processed by the background consumer.
+    /// Entries posted via WriteEntry may not be reflected immediately.
     /// </summary>
     public int Count => _entryCount;
+
+    /// <summary>
+    /// Waits for all queued operations to be processed by the background consumer.
+    /// Posts a sentinel flush operation to the channel and awaits its completion,
+    /// guaranteeing all preceding entries have been consumed.
+    /// </summary>
+    internal async Task WaitForConsumerAsync(TimeSpan? timeout = null)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_channel.Writer.TryWrite(WriteOperation.CreateFlush(tcs)))
+        {
+            return; // channel already completed, consumer has drained
+        }
+
+        var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(effectiveTimeout)).ConfigureAwait(false);
+        if (completed != tcs.Task)
+        {
+            throw new TimeoutException("WaitForConsumerAsync timed out waiting for consumer to drain.");
+        }
+    }
 
     /// <summary>
     /// Initializes a new <see cref="HarStreamWriter"/> and writes the HAR header to the file.
@@ -64,6 +92,10 @@ internal sealed class HarStreamWriter : IDisposable
         _pages = initialPages != null ? new List<HarPage>(initialPages) : new List<HarPage>();
         _logger = logger;
 
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
         _stream = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, bufferSize: 65536);
 
         // Write header: {"log":{"version":"...","creator":{...},"entries":[
@@ -83,6 +115,17 @@ internal sealed class HarStreamWriter : IDisposable
         _stream.Flush();
 
         _logger?.Log("HarStreamWriter", $"Initialized: {filePath}");
+
+        // Initialize channel and start background consumer
+        _channel = Channel.CreateUnbounded<WriteOperation>(
+            new UnboundedChannelOptions
+            {
+                SingleWriter = false,
+                SingleReader = true,
+                AllowSynchronousContinuations = false
+            });
+        _cts = new CancellationTokenSource();
+        _consumerTask = Task.Run(() => ConsumeAsync(_cts.Token));
     }
 
     /// <summary>
@@ -91,24 +134,10 @@ internal sealed class HarStreamWriter : IDisposable
     /// <param name="entry">The HAR entry to write.</param>
     public void WriteEntry(HarEntry entry)
     {
-        lock (_lock)
+        ThrowIfDisposed();
+        if (!_channel.Writer.TryWrite(WriteOperation.CreateEntry(entry)))
         {
-            ThrowIfDisposed();
-
-            _stream.Position = _footerStartPos;
-
-            if (_entryCount > 0)
-            {
-                _stream.WriteByte((byte)',');
-            }
-
-            JsonSerializer.Serialize(_stream, entry, _options);
-
-            _footerStartPos = _stream.Position;
-            _entryCount++;
-
-            WriteFooter();
-            _stream.Flush();
+            _logger?.Log("HarStreamWriter", "WriteEntry: channel completed, entry dropped");
         }
     }
 
@@ -118,15 +147,11 @@ internal sealed class HarStreamWriter : IDisposable
     /// <param name="page">The page to add.</param>
     public void AddPage(HarPage page)
     {
-        lock (_lock)
+        ThrowIfDisposed();
+        _pages.Add(page);
+        if (!_channel.Writer.TryWrite(WriteOperation.CreatePage(page)))
         {
-            ThrowIfDisposed();
-
-            _pages.Add(page);
-
-            _stream.Position = _footerStartPos;
-            WriteFooter();
-            _stream.Flush();
+            _logger?.Log("HarStreamWriter", "AddPage: channel completed, page dropped");
         }
     }
 
@@ -135,20 +160,95 @@ internal sealed class HarStreamWriter : IDisposable
     /// </summary>
     public void Complete()
     {
-        lock (_lock)
-        {
-            if (_completed || _disposed)
-                return;
+        if (_completed) return;
+        _completed = true;
+        _channel.Writer.TryComplete();
+        _logger?.Log("HarStreamWriter", $"Complete: channel closed, {_entryCount} entries written so far");
+    }
 
-            _completed = true;
-            _stream.Flush();
-            _logger?.Log("HarStreamWriter", $"Completed: {_entryCount} entries");
+    /// <summary>
+    /// Background consumer task that drains the channel and writes operations to the stream.
+    /// </summary>
+    private async Task ConsumeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (_channel.Reader.TryRead(out var operation))
+                {
+                    try
+                    {
+                        ProcessOperation(operation);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.Log("HarStreamWriter", $"ProcessOperation failed: {ex.Message}");
+                    }
+                }
+            }
+            _logger?.Log("HarStreamWriter", "Consumer completed normally");
+        }
+        catch (OperationCanceledException)
+        {
+            // Drain remaining items after cancellation
+            while (_channel.Reader.TryRead(out var operation))
+            {
+                try { ProcessOperation(operation); }
+                catch { /* best effort during shutdown */ }
+            }
+            _logger?.Log("HarStreamWriter", "Consumer canceled, drained remaining items");
         }
     }
 
     /// <summary>
+    /// Processes a single write operation (Entry or Page).
+    /// </summary>
+    private void ProcessOperation(WriteOperation operation)
+    {
+        switch (operation.Type)
+        {
+            case WriteOperation.OpType.Entry:
+                WriteEntryToStream(operation.Entry!);
+                break;
+            case WriteOperation.OpType.Page:
+                WritePageToStream();
+                break;
+            case WriteOperation.OpType.Flush:
+                operation.FlushTcs?.TrySetResult(true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Writes an entry to the stream using seek-back technique.
+    /// Called only by consumer task (no locking needed).
+    /// </summary>
+    private void WriteEntryToStream(HarEntry entry)
+    {
+        _stream.Position = _footerStartPos;
+        if (_entryCount > 0) _stream.WriteByte((byte)',');
+        JsonSerializer.Serialize(_stream, entry, _options);
+        _footerStartPos = _stream.Position;
+        _entryCount++;
+        WriteFooter();
+        _stream.Flush();
+    }
+
+    /// <summary>
+    /// Rewrites the footer to include updated pages.
+    /// Called only by consumer task (no locking needed).
+    /// </summary>
+    private void WritePageToStream()
+    {
+        _stream.Position = _footerStartPos;
+        WriteFooter();
+        _stream.Flush();
+    }
+
+    /// <summary>
     /// Writes the closing footer after the entries array.
-    /// Must be called with _lock held and _stream.Position at _footerStartPos.
+    /// Must be called with _stream.Position at _footerStartPos.
     /// </summary>
     private void WriteFooter()
     {
@@ -191,11 +291,55 @@ internal sealed class HarStreamWriter : IDisposable
     {
         if (_disposed)
             return;
-
-        if (!_completed)
-            Complete();
-
-        _stream.Dispose();
         _disposed = true;
+
+        // Complete channel and cancel consumer
+        _channel.Writer.TryComplete();
+        _cts.Cancel();
+
+        // Best effort: wait briefly for consumer to drain
+        try
+        {
+            if (!_consumerTask.Wait(TimeSpan.FromSeconds(5)))
+            {
+                _logger?.Log("HarStreamWriter", "Dispose: consumer did not drain within timeout, some entries may be lost");
+            }
+        }
+        catch { /* swallow exceptions during sync disposal */ }
+
+        _stream.Flush();
+        _stream.Dispose();
+        _cts.Dispose();
+
+        _logger?.Log("HarStreamWriter", $"Dispose: sync disposal completed, {_entryCount} entries");
+    }
+
+    /// <inheritdoc />
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Phase 1: Signal no more writes
+        _channel.Writer.TryComplete();
+
+        // Phase 2: Wait for consumer to drain all items
+        try
+        {
+            await _consumerTask.ConfigureAwait(false);
+            _logger?.Log("HarStreamWriter", $"DisposeAsync: consumer drained, {_entryCount} entries written");
+        }
+        catch (OperationCanceledException) { /* normal */ }
+        catch (Exception ex)
+        {
+            _logger?.Log("HarStreamWriter", $"DisposeAsync: consumer failed: {ex.Message}");
+        }
+
+        // Phase 3: Final flush and dispose resources
+        _stream.Flush();
+        _stream.Dispose();
+        _cts.Dispose();
+
+        GC.SuppressFinalize(this);
     }
 }

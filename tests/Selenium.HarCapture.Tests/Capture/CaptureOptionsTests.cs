@@ -19,6 +19,9 @@ public sealed class CaptureOptionsTests
         options.MaxResponseBodySize.Should().Be(0);
         options.UrlIncludePatterns.Should().BeNull();
         options.UrlExcludePatterns.Should().BeNull();
+        options.EnableCompression.Should().BeFalse();
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.All);
+        options.ResponseBodyMimeFilter.Should().BeNull();
     }
 
     [Fact]
@@ -151,5 +154,135 @@ public sealed class CaptureOptionsTests
         options.UrlIncludePatterns.Should().Equal("https://api.example.com/**");
         options.ForceSeleniumNetworkApi.Should().BeTrue();
         result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void BrowserOverride_DefaultIsNull()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions();
+
+        // Assert
+        options.BrowserName.Should().BeNull();
+        options.BrowserVersion.Should().BeNull();
+    }
+
+    [Fact]
+    public void FluentApi_WithBrowser_SetsOverrideAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithBrowser("MyBrowser", "1.0");
+
+        // Assert
+        options.BrowserName.Should().Be("MyBrowser");
+        options.BrowserVersion.Should().Be("1.0");
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void Compression_DefaultIsFalse()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions();
+
+        // Assert
+        options.EnableCompression.Should().BeFalse();
+    }
+
+    [Fact]
+    public void FluentApi_WithCompression_SetsValueAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithCompression();
+
+        // Assert
+        options.EnableCompression.Should().BeTrue();
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void FluentApi_WithWebSocketCapture_SetsFlag()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithWebSocketCapture();
+
+        // Assert
+        options.CaptureTypes.HasFlag(CaptureType.WebSocket).Should().BeTrue();
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void WithWebSocketCapture_PreservesExistingFlags()
+    {
+        // Arrange
+        var options = new CaptureOptions()
+            .WithCaptureTypes(CaptureType.AllText);
+
+        // Act
+        options.WithWebSocketCapture();
+
+        // Assert
+        options.CaptureTypes.HasFlag(CaptureType.AllText).Should().BeTrue();
+        options.CaptureTypes.HasFlag(CaptureType.WebSocket).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResponseBodyScope_DefaultIsAll()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions();
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.All);
+    }
+
+    [Fact]
+    public void FluentApi_WithResponseBodyScope_SetsValueAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithResponseBodyScope(ResponseBodyScope.PagesAndApi);
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.PagesAndApi);
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void FluentApi_WithResponseBodyMimeFilter_SetsFilterAndReturnsThis()
+    {
+        // Arrange
+        var options = new CaptureOptions();
+
+        // Act
+        var result = options.WithResponseBodyMimeFilter("image/png", "image/svg+xml");
+
+        // Assert
+        options.ResponseBodyMimeFilter.Should().Equal("image/png", "image/svg+xml");
+        result.Should().BeSameAs(options);
+    }
+
+    [Fact]
+    public void FluentApi_ScopeAndFilter_Composable()
+    {
+        // Arrange & Act
+        var options = new CaptureOptions()
+            .WithResponseBodyScope(ResponseBodyScope.PagesAndApi)
+            .WithResponseBodyMimeFilter("image/png", "image/svg+xml");
+
+        // Assert
+        options.ResponseBodyScope.Should().Be(ResponseBodyScope.PagesAndApi);
+        options.ResponseBodyMimeFilter.Should().Equal("image/png", "image/svg+xml");
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace Selenium.HarCapture.Models;
@@ -71,4 +72,22 @@ public sealed class HarEntry
     [JsonPropertyName("comment")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Comment { get; init; }
+
+    /// <summary>
+    /// Gets or initializes the resource type for Chrome DevTools compatibility.
+    /// Set to <c>"websocket"</c> for WebSocket entries so Chrome Network tab Socket filter works.
+    /// Null for regular HTTP entries (omitted from JSON).
+    /// </summary>
+    [JsonPropertyName("_resourceType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResourceType { get; init; }
+
+    /// <summary>
+    /// Gets or initializes WebSocket messages captured during this connection.
+    /// Uses the Chrome DevTools custom <c>_webSocketMessages</c> field for compatibility.
+    /// Only present for WebSocket upgrade (101) entries; null for regular HTTP entries.
+    /// </summary>
+    [JsonPropertyName("_webSocketMessages")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IList<HarWebSocketMessage>? WebSocketMessages { get; init; }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
@@ -20,12 +21,14 @@ namespace Selenium.HarCapture.Capture;
 /// It coordinates between a capture strategy (CDP or INetwork) and the HAR data model.
 /// Thread-safe for concurrent operations using internal locking.
 /// </remarks>
-public sealed class HarCaptureSession : IDisposable
+public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
 {
     private readonly CaptureOptions _options;
     private readonly UrlPatternMatcher _urlMatcher;
     private readonly FileLogger? _logger;
     private readonly object _lock = new object();
+    private readonly string? _browserName;
+    private readonly string? _browserVersion;
     private INetworkCaptureStrategy? _strategy;
     private HarStreamWriter? _streamWriter;
     private Har _har = null!;
@@ -93,6 +96,20 @@ public sealed class HarCaptureSession : IDisposable
         _options = options ?? new CaptureOptions();
         _urlMatcher = new UrlPatternMatcher(_options.UrlIncludePatterns, _options.UrlExcludePatterns);
         _logger = FileLogger.Create(_options.LogFilePath);
+
+        // Extract browser info: override takes precedence over auto-detection
+        if (_options.BrowserName != null)
+        {
+            _browserName = _options.BrowserName;
+            _browserVersion = _options.BrowserVersion;
+        }
+        else
+        {
+            var (name, version) = BrowserCapabilityExtractor.Extract(driver);
+            _browserName = name;
+            _browserVersion = version;
+        }
+
         _strategy = StrategyFactory.Create(driver, _options, _logger);
     }
 
@@ -110,6 +127,12 @@ public sealed class HarCaptureSession : IDisposable
         _options = options ?? new CaptureOptions();
         _urlMatcher = new UrlPatternMatcher(_options.UrlIncludePatterns, _options.UrlExcludePatterns);
         _logger = FileLogger.Create(_options.LogFilePath);
+
+        if (_options.BrowserName != null)
+        {
+            _browserName = _options.BrowserName;
+            _browserVersion = _options.BrowserVersion;
+        }
     }
 
     /// <summary>
@@ -204,8 +227,40 @@ public sealed class HarCaptureSession : IDisposable
 
         if (_streamWriter != null)
         {
+            // Complete signals no more writes, DisposeAsync drains remaining entries
             _streamWriter.Complete();
+            await _streamWriter.DisposeAsync().ConfigureAwait(false);
             _logger?.Log("HarCapture", $"Streaming completed: {_streamWriter.Count} entries, {_har.Log.Pages?.Count ?? 0} pages");
+            _streamWriter = null;
+
+            // Post-finalization compression: compress the uncompressed HAR file to .gz
+            if (_options.EnableCompression && _options.OutputFilePath != null)
+            {
+                var sourcePath = _options.OutputFilePath;
+                var compressedPath = sourcePath.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)
+                    ? sourcePath
+                    : sourcePath + ".gz";
+
+                _logger?.Log("HarCapture", $"Compressing: {sourcePath} -> {compressedPath}");
+
+                using (var inputStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None, bufferSize: 65536, useAsync: true))
+                using (var outputStream = new FileStream(compressedPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true))
+                using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
+                {
+                    await inputStream.CopyToAsync(gzipStream).ConfigureAwait(false);
+                    // No explicit Flush on GZipStream — Dispose handles footer writing (research pitfall #1)
+                }
+
+                // Delete uncompressed original if we created a new .gz file
+                if (!string.Equals(sourcePath, compressedPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(sourcePath);
+                    _logger?.Log("HarCapture", $"Deleted uncompressed file: {sourcePath}");
+                }
+
+                var compressedSize = new FileInfo(compressedPath).Length;
+                _logger?.Log("HarCapture", $"Compression completed: {compressedPath} ({compressedSize} bytes)");
+            }
         }
         else
         {
@@ -390,6 +445,17 @@ public sealed class HarCaptureSession : IDisposable
                 };
             }
 
+            // Create browser metadata if available
+            HarBrowser? browser = null;
+            if (_browserName != null)
+            {
+                browser = new HarBrowser
+                {
+                    Name = _browserName,
+                    Version = _browserVersion ?? ""
+                };
+            }
+
             // Initialize HAR
             _har = new Har
             {
@@ -401,6 +467,7 @@ public sealed class HarCaptureSession : IDisposable
                         Name = _options.CreatorName,
                         Version = typeof(HarCaptureSession).Assembly.GetName().Version?.ToString() ?? "1.0.0"
                     },
+                    Browser = browser,
                     Pages = pages,
                     Entries = new List<HarEntry>()
                 }
@@ -477,6 +544,36 @@ public sealed class HarCaptureSession : IDisposable
                 _logger?.Log("HarCapture", $"Entry added: pageRef={_currentPageRef ?? "(none)"}, totalEntries={entries.Count}");
             }
         }
+    }
+
+    /// <summary>
+    /// Asynchronously releases all resources used by the <see cref="HarCaptureSession"/>.
+    /// </summary>
+    /// <returns>A task that represents the asynchronous dispose operation.</returns>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _logger?.Log("HarCapture", "Session async disposal started");
+
+        if (_streamWriter != null)
+        {
+            await _streamWriter.DisposeAsync().ConfigureAwait(false);
+            _streamWriter = null;
+        }
+
+        if (_strategy != null)
+        {
+            _strategy.EntryCompleted -= OnEntryCompleted;
+            _strategy.Dispose();
+            _strategy = null;
+        }
+
+        _logger?.Dispose();
+        _disposed = true;
+
+        GC.SuppressFinalize(this);
     }
 
     /// <summary>
