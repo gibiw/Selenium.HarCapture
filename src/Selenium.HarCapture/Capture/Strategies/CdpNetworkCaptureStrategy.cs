@@ -66,9 +66,14 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     public event Action<HarEntry, string>? EntryCompleted;
 
     /// <inheritdoc />
-    public async Task StartAsync(CaptureOptions options)
+    public Task StartAsync(CaptureOptions options) => StartAsync(options, CancellationToken.None);
+
+    /// <inheritdoc />
+    public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         _logger?.Log("CDP", "StartAsync: creating session and adapter");
 
@@ -100,7 +105,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         _bodyWorkers = new Task[BodyWorkerCount];
         for (int i = 0; i < BodyWorkerCount; i++)
         {
-            _bodyWorkers[i] = BodyWorkerLoop(_bodyChannel.Reader);
+            _bodyWorkers[i] = BodyWorkerLoop(_bodyChannel.Reader, cancellationToken);
         }
 
         // Subscribe to adapter events BEFORE enabling (critical order)
@@ -131,10 +136,15 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     private const int DisposeTimeoutMs = 5_000;
 
     /// <inheritdoc />
-    public async Task StopAsync()
+    public Task StopAsync() => StopAsync(CancellationToken.None);
+
+    /// <inheritdoc />
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         if (_adapter != null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             // Set stopping flag FIRST to prevent event handlers from accessing disposed resources
             _stopping = true;
 
@@ -160,16 +170,33 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             if (_bodyWorkers != null)
             {
                 _logger?.Log("CDP", $"StopAsync: waiting for {BodyWorkerCount} body workers to drain");
+
+                // Create linked token source combining caller's token with 10-second timeout
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                linkedCts.CancelAfter(TimeSpan.FromSeconds(10));
+
                 var allWorkers = Task.WhenAll(_bodyWorkers);
-                var completed = await Task.WhenAny(allWorkers, Task.Delay(StopTimeoutMs)).ConfigureAwait(false);
-                if (completed == allWorkers)
+                try
                 {
-                    await allWorkers.ConfigureAwait(false);
-                    _logger?.Log("CDP", "StopAsync: all body workers completed");
+                    var completed = await Task.WhenAny(allWorkers, Task.Delay(Timeout.Infinite, linkedCts.Token)).ConfigureAwait(false);
+                    if (completed == allWorkers)
+                    {
+                        await allWorkers.ConfigureAwait(false);
+                        _logger?.Log("CDP", "StopAsync: all body workers completed");
+                    }
                 }
-                else
+                catch (OperationCanceledException)
                 {
-                    _logger?.Log("CDP", $"StopAsync: body workers timed out after {StopTimeoutMs / 1000}s, proceeding without remaining bodies");
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        // Caller cancelled
+                        throw;
+                    }
+                    else
+                    {
+                        // Timeout
+                        _logger?.Log("CDP", $"StopAsync: body workers timed out after {StopTimeoutMs / 1000}s, proceeding without remaining bodies");
+                    }
                 }
             }
 
@@ -525,7 +552,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     /// Retrieves the response body for a completed request and fires EntryCompleted with updated entry.
     /// Uses URL-based caching to avoid redundant CDP calls for the same resource across pages.
     /// </summary>
-    private async Task RetrieveResponseBodyAsync(string requestId, HarEntry entry)
+    private async Task RetrieveResponseBodyAsync(string requestId, HarEntry entry, CancellationToken cancellationToken)
     {
         try
         {
@@ -534,6 +561,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 EntryCompleted?.Invoke(entry, requestId);
                 return;
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             string? bodyText;
             bool base64Encoded;
@@ -992,17 +1021,22 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     /// Worker loop that reads body retrieval requests from the channel and processes them sequentially.
     /// Multiple workers run concurrently, providing bounded parallelism for CDP getResponseBody calls.
     /// </summary>
-    private async Task BodyWorkerLoop(ChannelReader<BodyRetrievalRequest> reader)
+    private async Task BodyWorkerLoop(ChannelReader<BodyRetrievalRequest> reader, CancellationToken cancellationToken)
     {
         try
         {
-            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 while (reader.TryRead(out var request))
                 {
-                    await RetrieveResponseBodyAsync(request.RequestId, request.Entry).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await RetrieveResponseBodyAsync(request.RequestId, request.Entry, cancellationToken).ConfigureAwait(false);
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger?.Log("CDP", "Body worker cancelled");
         }
         catch (Exception ex)
         {

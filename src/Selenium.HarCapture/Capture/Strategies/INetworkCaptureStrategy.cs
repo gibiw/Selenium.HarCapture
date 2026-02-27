@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Selenium.HarCapture.Models;
 
@@ -53,9 +54,26 @@ internal interface INetworkCaptureStrategy : IDisposable
     Task StartAsync(CaptureOptions options);
 
     /// <summary>
+    /// Starts network capture with the specified options.
+    /// Must be called before any network traffic will be captured.
+    /// </summary>
+    /// <param name="options">Configuration options controlling capture behavior, URL filtering, and size limits.</param>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
+    /// <returns>A task that completes when capture is successfully started.</returns>
+    Task StartAsync(CaptureOptions options, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Stops network capture and flushes any pending entries.
     /// After calling this, no further network events will be captured.
     /// </summary>
     /// <returns>A task that completes when capture is successfully stopped.</returns>
     Task StopAsync();
+
+    /// <summary>
+    /// Stops network capture and flushes any pending entries.
+    /// After calling this, no further network events will be captured.
+    /// </summary>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
+    /// <returns>A task that completes when capture is successfully stopped.</returns>
+    Task StopAsync(CancellationToken cancellationToken);
 }

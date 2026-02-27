@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using OpenQA.Selenium;
@@ -50,9 +51,14 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     public event Action<HarEntry, string>? EntryCompleted;
 
     /// <inheritdoc />
-    public async Task StartAsync(CaptureOptions options)
+    public Task StartAsync(CaptureOptions options) => StartAsync(options, CancellationToken.None);
+
+    /// <inheritdoc />
+    public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Initialize URL matcher for filtering
         _urlMatcher = new UrlPatternMatcher(options.UrlIncludePatterns, options.UrlExcludePatterns);
@@ -73,25 +79,46 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private const int DisposeTimeoutMs = 5_000;
 
     /// <inheritdoc />
-    public async Task StopAsync()
+    public Task StopAsync() => StopAsync(CancellationToken.None);
+
+    /// <inheritdoc />
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         if (_network != null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
+                // Create linked token source combining caller's token with 10-second timeout
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                linkedCts.CancelAfter(TimeSpan.FromSeconds(10));
+
                 var stopTask = _network.StopMonitoring();
-                var completed = await Task.WhenAny(stopTask, Task.Delay(StopTimeoutMs)).ConfigureAwait(false);
-                if (completed == stopTask)
+                try
                 {
-                    await stopTask.ConfigureAwait(false);
-                    _logger?.Log("INetwork", "StopAsync: monitoring stopped");
+                    var completed = await Task.WhenAny(stopTask, Task.Delay(Timeout.Infinite, linkedCts.Token)).ConfigureAwait(false);
+                    if (completed == stopTask)
+                    {
+                        await stopTask.ConfigureAwait(false);
+                        _logger?.Log("INetwork", "StopAsync: monitoring stopped");
+                    }
                 }
-                else
+                catch (OperationCanceledException)
                 {
-                    _logger?.Log("INetwork", $"StopAsync: StopMonitoring timed out after {StopTimeoutMs / 1000}s, forcing stop");
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        // Caller cancelled
+                        throw;
+                    }
+                    else
+                    {
+                        // Timeout
+                        _logger?.Log("INetwork", $"StopAsync: StopMonitoring timed out after {StopTimeoutMs / 1000}s, forcing stop");
+                    }
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!(ex is OperationCanceledException))
             {
                 _logger?.Log("INetwork", $"StopAsync: StopMonitoring failed: {ex.Message}");
             }
