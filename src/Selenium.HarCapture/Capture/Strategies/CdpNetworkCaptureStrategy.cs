@@ -457,6 +457,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             Response = baseEntry.Response,
             Cache = baseEntry.Cache,
             Timings = baseEntry.Timings,
+            ResourceType = "websocket",
             WebSocketMessages = frames
         };
 
