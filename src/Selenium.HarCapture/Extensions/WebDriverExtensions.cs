@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
 using Selenium.HarCapture.Capture;
@@ -66,6 +67,30 @@ public static class WebDriverExtensions
         await capture.StartAsync().ConfigureAwait(false);
         await action().ConfigureAwait(false);
         return await capture.StopAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One-liner: captures HAR for the duration of an async action with cancellation support. Automatically starts capture, executes action, stops capture, and returns HAR.
+    /// </summary>
+    /// <param name="driver">The WebDriver instance to capture network traffic from.</param>
+    /// <param name="action">The async action to execute while capturing network traffic.</param>
+    /// <param name="options">Configuration options for capture behavior. Pass null explicitly for default options.</param>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous operation. The task result contains the captured HAR object.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when driver or action is null.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the driver does not support network capture.</exception>
+    /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled via the token.</exception>
+    public static async Task<Har> CaptureHarAsync(this IWebDriver driver, Func<Task> action, CaptureOptions? options, CancellationToken cancellationToken)
+    {
+        if (action == null)
+        {
+            throw new ArgumentNullException(nameof(action));
+        }
+
+        await using var capture = new HarCapture(driver, options);
+        await capture.StartAsync(null, null, cancellationToken).ConfigureAwait(false);
+        await action().ConfigureAwait(false);
+        return await capture.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
