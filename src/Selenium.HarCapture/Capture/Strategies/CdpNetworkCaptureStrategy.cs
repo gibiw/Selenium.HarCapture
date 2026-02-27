@@ -66,10 +66,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     public event Action<HarEntry, string>? EntryCompleted;
 
     /// <inheritdoc />
-    public Task StartAsync(CaptureOptions options) => StartAsync(options, CancellationToken.None);
-
-    /// <inheritdoc />
-    public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken)
+    public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken = default)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
@@ -136,10 +133,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     private const int DisposeTimeoutMs = 5_000;
 
     /// <inheritdoc />
-    public Task StopAsync() => StopAsync(CancellationToken.None);
-
-    /// <inheritdoc />
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (_adapter != null)
         {

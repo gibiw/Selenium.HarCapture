@@ -680,22 +680,12 @@ public sealed class HarCaptureSessionTests
         public bool SupportsResponseBody => true;
         public event Action<HarEntry, string>? EntryCompleted;
 
-        public Task StartAsync(CaptureOptions options)
+        public Task StartAsync(CaptureOptions options, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
         }
 
-        public Task StartAsync(CaptureOptions options, CancellationToken cancellationToken)
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task StopAsync()
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task StopAsync(CancellationToken cancellationToken)
+        public Task StopAsync(CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
         }

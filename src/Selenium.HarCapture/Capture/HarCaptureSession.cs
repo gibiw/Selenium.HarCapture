@@ -152,19 +152,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous start operation.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is already started or no strategy is configured.</exception>
-    public Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null)
-        => StartAsync(initialPageRef, initialPageTitle, CancellationToken.None);
-
-    /// <summary>
-    /// Asynchronously starts network traffic capture.
-    /// </summary>
-    /// <param name="initialPageRef">Optional page reference ID for the initial page. If provided, creates the first page in the HAR.</param>
-    /// <param name="initialPageTitle">Optional page title for the initial page. Used only if initialPageRef is provided.</param>
-    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
-    /// <returns>A task that represents the asynchronous start operation.</returns>
-    /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
-    /// <exception cref="InvalidOperationException">Thrown when capture is already started or no strategy is configured.</exception>
-    public async Task StartAsync(string? initialPageRef, string? initialPageTitle, CancellationToken cancellationToken)
+    public async Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null, CancellationToken cancellationToken = default)
     {
         if (_disposed)
         {
@@ -231,16 +219,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous stop operation. The task result contains the final HAR object.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is not started.</exception>
-    public Task<Har> StopAsync() => StopAsync(CancellationToken.None);
-
-    /// <summary>
-    /// Asynchronously stops network traffic capture and returns the final HAR object.
-    /// </summary>
-    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
-    /// <returns>A task that represents the asynchronous stop operation. The task result contains the final HAR object.</returns>
-    /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
-    /// <exception cref="InvalidOperationException">Thrown when capture is not started.</exception>
-    public async Task<Har> StopAsync(CancellationToken cancellationToken)
+    public async Task<Har> StopAsync(CancellationToken cancellationToken = default)
     {
         if (_disposed)
         {
