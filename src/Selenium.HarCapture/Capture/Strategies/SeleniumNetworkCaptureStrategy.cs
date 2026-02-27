@@ -25,6 +25,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private readonly RequestResponseCorrelator _correlator = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _requestTimestamps = new();
     private UrlPatternMatcher? _urlMatcher;
+    private SensitiveDataRedactor? _redactor;
     private bool _disposed;
 
     /// <summary>
@@ -59,6 +60,12 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
 
         // Initialize URL matcher for filtering
         _urlMatcher = new UrlPatternMatcher(options.UrlIncludePatterns, options.UrlExcludePatterns);
+
+        // Initialize redactor for sensitive data
+        _redactor = new SensitiveDataRedactor(
+            options.SensitiveHeaders,
+            options.SensitiveCookies,
+            options.SensitiveQueryParams);
 
         // Get INetwork from driver
         _network = _driver.Manage().Network;
@@ -245,6 +252,14 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         // Query string
         var queryString = ParseQueryString(e.RequestUrl ?? "");
 
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
+            queryString = _redactor.RedactQueryString(queryString);
+        }
+
         // Post data
         HarPostData? postData = null;
         if ((captureTypes & CaptureType.RequestContent) != 0 && !string.IsNullOrEmpty(e.RequestPostData))
@@ -262,7 +277,9 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         return new HarRequest
         {
             Method = e.RequestMethod ?? "GET",
-            Url = e.RequestUrl ?? "",
+            Url = (_redactor != null && _redactor.HasRedactions)
+                ? _redactor.RedactUrl(e.RequestUrl ?? "")
+                : (e.RequestUrl ?? ""),
             HttpVersion = "HTTP/1.1",
             Headers = headers,
             Cookies = cookies,
@@ -294,6 +311,13 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         if ((captureTypes & CaptureType.ResponseCookies) != 0)
         {
             cookies = ParseSetCookieHeaders(e.ResponseHeaders);
+        }
+
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
         }
 
         // Extract MIME type from Content-Type header

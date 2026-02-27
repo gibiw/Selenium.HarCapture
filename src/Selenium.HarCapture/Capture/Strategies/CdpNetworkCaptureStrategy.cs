@@ -38,6 +38,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
     private const int BodyWorkerCount = 3;
     private UrlPatternMatcher? _urlMatcher;
     private MimeTypeMatcher? _mimeMatcher;
+    private SensitiveDataRedactor? _redactor;
     private WebSocketFrameAccumulator? _wsAccumulator;
     private volatile bool _stopping;
     private bool _disposed;
@@ -91,6 +92,12 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
 
         // Initialize MIME type matcher for body retrieval filtering
         _mimeMatcher = MimeTypeMatcher.FromScope(options.ResponseBodyScope, options.ResponseBodyMimeFilter);
+
+        // Initialize redactor for sensitive data
+        _redactor = new SensitiveDataRedactor(
+            options.SensitiveHeaders,
+            options.SensitiveCookies,
+            options.SensitiveQueryParams);
 
         // Create bounded channel + worker tasks for body retrieval
         _bodyChannel = Channel.CreateBounded<BodyRetrievalRequest>(new BoundedChannelOptions(2000)
@@ -690,6 +697,14 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         // Query string
         var queryString = ParseQueryString(cdpRequest.Url);
 
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
+            queryString = _redactor.RedactQueryString(queryString);
+        }
+
         // Post data
         HarPostData? postData = null;
         if ((captureTypes & CaptureType.RequestContent) != 0 && !string.IsNullOrEmpty(cdpRequest.PostData))
@@ -707,7 +722,9 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         return new HarRequest
         {
             Method = cdpRequest.Method ?? "GET",
-            Url = cdpRequest.Url ?? "",
+            Url = (_redactor != null && _redactor.HasRedactions)
+                ? _redactor.RedactUrl(cdpRequest.Url ?? "")
+                : (cdpRequest.Url ?? ""),
             HttpVersion = "HTTP/1.1",
             Headers = headers,
             Cookies = cookies,
@@ -739,6 +756,13 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         if ((captureTypes & CaptureType.ResponseCookies) != 0)
         {
             cookies = ParseSetCookieHeaders(cdpResponse.Headers);
+        }
+
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
         }
 
         // Content (initially without body text)
