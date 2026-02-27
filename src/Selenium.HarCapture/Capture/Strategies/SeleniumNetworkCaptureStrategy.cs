@@ -26,6 +26,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private readonly ConcurrentDictionary<string, DateTimeOffset> _requestTimestamps = new();
     private UrlPatternMatcher? _urlMatcher;
     private SensitiveDataRedactor? _redactor;
+    private MimeTypeMatcher _mimeMatcher = MimeTypeMatcher.CaptureAll;
     private bool _disposed;
 
     /// <summary>
@@ -72,6 +73,9 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             options.SensitiveHeaders,
             options.SensitiveCookies,
             options.SensitiveQueryParams);
+
+        // Initialize MIME type matcher for body filtering (HAR-04 — parity with CDP strategy)
+        _mimeMatcher = MimeTypeMatcher.FromScope(options.ResponseBodyScope, options.ResponseBodyMimeFilter);
 
         // Get INetwork from driver
         _network = _driver.Manage().Network;
@@ -345,14 +349,22 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
 
         if (wantsContent && e.ResponseBody != null)
         {
-            bodyText = e.ResponseBody;
-            bodySize = bodyText.Length;
-
-            // Check MaxResponseBodySize limit
-            if (_options.MaxResponseBodySize > 0 && bodySize > _options.MaxResponseBodySize)
+            // HAR-04: Apply MIME filtering (parity with CDP strategy)
+            if (!_mimeMatcher.ShouldRetrieveBody(mimeType))
             {
-                bodyText = bodyText.Substring(0, (int)_options.MaxResponseBodySize);
-                bodySize = _options.MaxResponseBodySize;
+                _logger?.Log("INetwork", $"Body skipped by ResponseBodyScope filter: mimeType={mimeType}");
+            }
+            else
+            {
+                bodyText = e.ResponseBody;
+                bodySize = bodyText.Length;
+
+                // Check MaxResponseBodySize limit
+                if (_options.MaxResponseBodySize > 0 && bodySize > _options.MaxResponseBodySize)
+                {
+                    bodyText = bodyText.Substring(0, (int)_options.MaxResponseBodySize);
+                    bodySize = _options.MaxResponseBodySize;
+                }
             }
         }
 
