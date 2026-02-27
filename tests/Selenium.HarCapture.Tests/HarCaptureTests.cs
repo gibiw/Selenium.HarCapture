@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
 using OpenQA.Selenium;
@@ -446,6 +447,130 @@ public sealed class HarCaptureTests
         {
             if (File.Exists(tempFile)) File.Delete(tempFile);
         }
+    }
+
+    [Fact]
+    public async Task StopAsync_WithCancellationToken_DelegatesToSession()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+        await capture.StartAsync();
+
+        // Act
+        var har = await capture.StopAsync(CancellationToken.None);
+
+        // Assert
+        har.Should().NotBeNull();
+        har.Log.Should().NotBeNull();
+        har.Log.Version.Should().Be("1.2");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithCancellationToken_DelegatesToSession()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act
+        await capture.StartAsync(null, null, CancellationToken.None);
+
+        // Assert
+        capture.IsCapturing.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithCancelledToken_ThrowsOperationCancelled()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+        await capture.StartAsync();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act
+        Func<Task> act = async () => await capture.StopAsync(cts.Token);
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public void FinalOutputFilePath_ReturnsSessionValue()
+    {
+        // Arrange
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        try
+        {
+            var options = new CaptureOptions().WithOutputFile(tempFile);
+            var mockStrategy = new MockCaptureStrategy();
+            var session = new HarCaptureSession(mockStrategy, options);
+            var capture = new HarCapture(session);
+
+            // Act
+            var finalPath = capture.FinalOutputFilePath;
+
+            // Assert
+            finalPath.Should().Be(tempFile);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void FinalOutputFilePath_WhenDisposed_ReturnsNull()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act
+        capture.Dispose();
+        var finalPath = capture.FinalOutputFilePath;
+
+        // Assert
+        finalPath.Should().BeNull("session is null after disposal");
+    }
+
+    [Fact]
+    public void Dispose_DoesNotDeadlock()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act - call Dispose synchronously (should complete within timeout)
+        var task = Task.Run(() => capture.Dispose());
+        var completed = task.Wait(TimeSpan.FromSeconds(10));
+
+        // Assert
+        completed.Should().BeTrue("Dispose should complete within 10 seconds without deadlock");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_ThenDispose_IsIdempotent()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act - call DisposeAsync then Dispose
+        await capture.DisposeAsync();
+        Action act = () => capture.Dispose();
+
+        // Assert - no exception thrown
+        act.Should().NotThrow();
     }
 
     private static HarEntry CreateTestEntry(string url = "https://example.com/page")

@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
 using OpenQA.Selenium;
@@ -519,6 +520,55 @@ public sealed class HarCaptureSessionTests
             if (File.Exists(tempFile)) File.Delete(tempFile);
             if (File.Exists(tempFile + ".gz")) File.Delete(tempFile + ".gz");
         }
+    }
+
+    [Fact]
+    public async Task StartAsync_WithCancellationToken_CompletesSuccessfully()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+
+        // Act
+        await session.StartAsync(null, null, CancellationToken.None);
+
+        // Assert
+        session.IsCapturing.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithCancellationToken_CompletesSuccessfully()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        await session.StartAsync();
+
+        // Act
+        var har = await session.StopAsync(CancellationToken.None);
+
+        // Assert
+        har.Should().NotBeNull();
+        har.Log.Should().NotBeNull();
+        session.IsCapturing.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithCancelledToken_ThrowsOperationCancelled()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        await session.StartAsync();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act
+        Func<Task> act = async () => await session.StopAsync(cts.Token);
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     private class MockCapabilitiesDriver : IWebDriver, IHasCapabilities
