@@ -89,6 +89,28 @@ public sealed class TestWebServer : IAsyncLifetime
             """,
             "text/html"));
 
+        app.MapGet("/api/sensitive", (HttpContext ctx) =>
+        {
+            ctx.Response.Headers["X-Custom-Header"] = "visible-value";
+            ctx.Response.Headers["Authorization"] = "Bearer secret-token-123";
+            ctx.Response.Headers["X-Api-Key"] = "sk-secret-key-456";
+            ctx.Response.Cookies.Append("session-id", "sess-abc-123");
+            ctx.Response.Cookies.Append("tracking", "track-xyz");
+            return Results.Json(new { status = "ok" });
+        });
+
+        app.MapGet("/api/with-query", () => Results.Json(new { query = "received" }));
+
+        app.MapGet("/style.css", () => Results.Content(
+            "body { color: red; }",
+            "text/css"));
+
+        app.MapGet("/image.png", () =>
+        {
+            var bytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 }; // PNG header stub
+            return Results.Bytes(bytes, "image/png");
+        });
+
         app.MapGet("/redirect", () => Results.Redirect("/api/data"));
 
         app.MapGet("/api/slow", async () =>
