@@ -13,8 +13,8 @@
     <Email>dmit.gridnev@gmail.com</Email>
     <PackageTags>selenium;har;http-archive;webdriver;cdp;network;capture;testing</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/gibiw/Selenium.Hars</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/gibiw/Selenium.Hars.git</RepositoryUrl>
+    <PackageProjectUrl>hhttps://github.com/gibiw/Selenium.HarCapture</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/gibiw/Selenium.HarCapture</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Version>0.2.0</Version>
