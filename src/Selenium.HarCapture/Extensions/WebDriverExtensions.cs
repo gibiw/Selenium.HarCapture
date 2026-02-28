@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
 using Selenium.HarCapture.Capture;
@@ -55,7 +56,7 @@ public static class WebDriverExtensions
     /// <returns>A task that represents the asynchronous operation. The task result contains the captured HAR object.</returns>
     /// <exception cref="ArgumentNullException">Thrown when driver or action is null.</exception>
     /// <exception cref="InvalidOperationException">Thrown when the driver does not support network capture.</exception>
-    public static async Task<Har> CaptureHarAsync(this IWebDriver driver, Func<Task> action, CaptureOptions? options = null)
+    public static async Task<Har> CaptureHarAsync(this IWebDriver driver, Func<Task> action, CaptureOptions? options = null, CancellationToken cancellationToken = default)
     {
         if (action == null)
         {
@@ -63,9 +64,9 @@ public static class WebDriverExtensions
         }
 
         await using var capture = new HarCapture(driver, options);
-        await capture.StartAsync().ConfigureAwait(false);
+        await capture.StartAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         await action().ConfigureAwait(false);
-        return await capture.StopAsync().ConfigureAwait(false);
+        return await capture.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

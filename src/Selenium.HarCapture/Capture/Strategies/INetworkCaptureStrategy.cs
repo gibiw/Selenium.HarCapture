@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Selenium.HarCapture.Models;
 
@@ -35,6 +36,18 @@ internal interface INetworkCaptureStrategy : IDisposable
     bool SupportsResponseBody { get; }
 
     /// <summary>
+    /// Gets the monotonic timestamp (in milliseconds) of the last DOMContentLoaded event, or null if not fired.
+    /// Relative to the first request timestamp for the current page.
+    /// </summary>
+    double? LastDomContentLoadedTimestamp { get; }
+
+    /// <summary>
+    /// Gets the monotonic timestamp (in milliseconds) of the last Load event, or null if not fired.
+    /// Relative to the first request timestamp for the current page.
+    /// </summary>
+    double? LastLoadTimestamp { get; }
+
+    /// <summary>
     /// Event fired when a fully-correlated HTTP request/response pair is ready.
     /// The first parameter is the complete HAR entry, the second is the internal request ID.
     /// </summary>
@@ -49,13 +62,15 @@ internal interface INetworkCaptureStrategy : IDisposable
     /// Must be called before any network traffic will be captured.
     /// </summary>
     /// <param name="options">Configuration options controlling capture behavior, URL filtering, and size limits.</param>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
     /// <returns>A task that completes when capture is successfully started.</returns>
-    Task StartAsync(CaptureOptions options);
+    Task StartAsync(CaptureOptions options, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stops network capture and flushes any pending entries.
     /// After calling this, no further network events will be captured.
     /// </summary>
+    /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
     /// <returns>A task that completes when capture is successfully stopped.</returns>
-    Task StopAsync();
+    Task StopAsync(CancellationToken cancellationToken = default);
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
 using OpenQA.Selenium;
@@ -8,6 +9,7 @@ using Selenium.HarCapture;
 using Selenium.HarCapture.Capture;
 using Selenium.HarCapture.Capture.Strategies;
 using Selenium.HarCapture.Models;
+using Selenium.HarCapture.Tests.Fixtures;
 using Xunit;
 
 namespace Selenium.HarCapture.Tests;
@@ -98,7 +100,7 @@ public sealed class HarCaptureTests
         var session = new HarCaptureSession(mockStrategy);
         var capture = new HarCapture(session);
         capture.Start();
-        mockStrategy.SimulateEntry(CreateTestEntry("https://example.com/api/test"), "req1");
+        mockStrategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/api/test"), "req1");
 
         // Act - get two snapshots
         var har1 = capture.GetHar();
@@ -386,74 +388,190 @@ public sealed class HarCaptureTests
         }
     }
 
-    private static HarEntry CreateTestEntry(string url = "https://example.com/page")
+    [Fact]
+    public async Task StopAndSaveAsync_Parameterless_WithCompression_DoesNotThrow()
     {
-        return new HarEntry
+        // Arrange — reproduces FileNotFoundException when compression deletes original .har
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        var gzFile = tempFile + ".gz";
+        try
         {
-            StartedDateTime = DateTimeOffset.UtcNow,
-            Time = 100,
-            Request = new HarRequest
-            {
-                Method = "GET",
-                Url = url,
-                HttpVersion = "HTTP/1.1",
-                Cookies = new List<HarCookie>(),
-                Headers = new List<HarHeader>(),
-                QueryString = new List<HarQueryString>(),
-                HeadersSize = -1,
-                BodySize = -1
-            },
-            Response = new HarResponse
-            {
-                Status = 200,
-                StatusText = "OK",
-                HttpVersion = "HTTP/1.1",
-                Cookies = new List<HarCookie>(),
-                Headers = new List<HarHeader>(),
-                Content = new HarContent
-                {
-                    Size = 0,
-                    MimeType = "text/html"
-                },
-                RedirectURL = "",
-                HeadersSize = -1,
-                BodySize = -1
-            },
-            Cache = new HarCache(),
-            Timings = new HarTimings
-            {
-                Send = 1,
-                Wait = 50,
-                Receive = 49
-            }
-        };
+            var options = new CaptureOptions()
+                .WithOutputFile(tempFile)
+                .WithCompression();
+            var mockStrategy = new MockCaptureStrategy();
+            var session = new HarCaptureSession(mockStrategy, options);
+            var capture = new HarCapture(session);
+            await capture.StartAsync("page1", "Test Page");
+
+            mockStrategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/api/test"), "req1");
+
+            // Act — this used to throw FileNotFoundException because
+            // StopAsync compresses .har → .har.gz and deletes the original,
+            // but StopAndSaveAsync tried to read FileInfo on the deleted .har path
+            Func<Task> act = async () => await capture.StopAndSaveAsync();
+
+            // Assert
+            await act.Should().NotThrowAsync();
+            File.Exists(gzFile).Should().BeTrue("compressed file should exist");
+            File.Exists(tempFile).Should().BeFalse("original should be deleted after compression");
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+            if (File.Exists(gzFile)) File.Delete(gzFile);
+        }
     }
 
-    private sealed class MockCaptureStrategy : INetworkCaptureStrategy
+    [Fact]
+    public async Task StopAndSaveAsync_Parameterless_WithoutCompression_ReportsCorrectPath()
     {
-        public string StrategyName => "Mock";
-        public bool SupportsDetailedTimings => true;
-        public bool SupportsResponseBody => true;
-        public event Action<HarEntry, string>? EntryCompleted;
-
-        public Task StartAsync(CaptureOptions options)
+        // Arrange — verify FinalOutputFilePath falls back to OutputFilePath when compression is not enabled
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        try
         {
-            return Task.CompletedTask;
+            var options = new CaptureOptions().WithOutputFile(tempFile);
+            var mockStrategy = new MockCaptureStrategy();
+            var session = new HarCaptureSession(mockStrategy, options);
+            var capture = new HarCapture(session);
+            await capture.StartAsync("page1", "Test Page");
+            mockStrategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/api/test"), "req1");
+
+            // Act
+            Func<Task> act = async () => await capture.StopAndSaveAsync();
+
+            // Assert
+            await act.Should().NotThrowAsync();
+            File.Exists(tempFile).Should().BeTrue("uncompressed file should exist when compression disabled");
         }
-
-        public Task StopAsync()
+        finally
         {
-            return Task.CompletedTask;
-        }
-
-        public void Dispose()
-        {
-        }
-
-        // Test helper to simulate an entry arriving
-        public void SimulateEntry(HarEntry entry, string requestId)
-        {
-            EntryCompleted?.Invoke(entry, requestId);
+            if (File.Exists(tempFile)) File.Delete(tempFile);
         }
     }
+
+    [Fact]
+    public async Task StopAsync_WithCancellationToken_DelegatesToSession()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+        await capture.StartAsync();
+
+        // Act
+        var har = await capture.StopAsync(CancellationToken.None);
+
+        // Assert
+        har.Should().NotBeNull();
+        har.Log.Should().NotBeNull();
+        har.Log.Version.Should().Be("1.2");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithCancellationToken_DelegatesToSession()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act
+        await capture.StartAsync(null, null, CancellationToken.None);
+
+        // Assert
+        capture.IsCapturing.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task StopAsync_WithCancelledToken_ThrowsOperationCancelled()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+        await capture.StartAsync();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act
+        Func<Task> act = async () => await capture.StopAsync(cts.Token);
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public void FinalOutputFilePath_ReturnsSessionValue()
+    {
+        // Arrange
+        var tempFile = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".har");
+        try
+        {
+            var options = new CaptureOptions().WithOutputFile(tempFile);
+            var mockStrategy = new MockCaptureStrategy();
+            var session = new HarCaptureSession(mockStrategy, options);
+            var capture = new HarCapture(session);
+
+            // Act
+            var finalPath = capture.FinalOutputFilePath;
+
+            // Assert
+            finalPath.Should().Be(tempFile);
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void FinalOutputFilePath_WhenDisposed_ReturnsNull()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act
+        capture.Dispose();
+        var finalPath = capture.FinalOutputFilePath;
+
+        // Assert
+        finalPath.Should().BeNull("session is null after disposal");
+    }
+
+    [Fact]
+    public void Dispose_DoesNotDeadlock()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act - call Dispose synchronously (should complete within timeout)
+        var task = Task.Run(() => capture.Dispose());
+        var completed = task.Wait(TimeSpan.FromSeconds(10));
+
+        // Assert
+        completed.Should().BeTrue("Dispose should complete within 10 seconds without deadlock");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_ThenDispose_IsIdempotent()
+    {
+        // Arrange
+        var mockStrategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(mockStrategy);
+        var capture = new HarCapture(session);
+
+        // Act - call DisposeAsync then Dispose
+        await capture.DisposeAsync();
+        Action act = () => capture.Dispose();
+
+        // Assert - no exception thrown
+        act.Should().NotThrow();
+    }
+
 }

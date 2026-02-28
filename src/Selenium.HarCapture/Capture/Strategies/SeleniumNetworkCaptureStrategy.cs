@@ -2,8 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Web;
 using OpenQA.Selenium;
 using Selenium.HarCapture.Capture.Internal;
 using Selenium.HarCapture.Models;
@@ -24,6 +24,8 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private readonly RequestResponseCorrelator _correlator = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _requestTimestamps = new();
     private UrlPatternMatcher? _urlMatcher;
+    private SensitiveDataRedactor? _redactor;
+    private MimeTypeMatcher _mimeMatcher = MimeTypeMatcher.CaptureAll;
     private bool _disposed;
 
     /// <summary>
@@ -47,15 +49,32 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     public bool SupportsResponseBody => true;
 
     /// <inheritdoc />
+    public double? LastDomContentLoadedTimestamp => null;
+
+    /// <inheritdoc />
+    public double? LastLoadTimestamp => null;
+
+    /// <inheritdoc />
     public event Action<HarEntry, string>? EntryCompleted;
 
     /// <inheritdoc />
-    public async Task StartAsync(CaptureOptions options)
+    public async Task StartAsync(CaptureOptions options, CancellationToken cancellationToken = default)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Initialize URL matcher for filtering
         _urlMatcher = new UrlPatternMatcher(options.UrlIncludePatterns, options.UrlExcludePatterns);
+
+        // Initialize redactor for sensitive data
+        _redactor = new SensitiveDataRedactor(
+            options.SensitiveHeaders,
+            options.SensitiveCookies,
+            options.SensitiveQueryParams);
+
+        // Initialize MIME type matcher for body filtering (HAR-04 — parity with CDP strategy)
+        _mimeMatcher = MimeTypeMatcher.FromScope(options.ResponseBodyScope, options.ResponseBodyMimeFilter);
 
         // Get INetwork from driver
         _network = _driver.Manage().Network;
@@ -73,25 +92,43 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
     private const int DisposeTimeoutMs = 5_000;
 
     /// <inheritdoc />
-    public async Task StopAsync()
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (_network != null)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
+                // Create linked token source combining caller's token with 10-second timeout
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                linkedCts.CancelAfter(TimeSpan.FromSeconds(10));
+
                 var stopTask = _network.StopMonitoring();
-                var completed = await Task.WhenAny(stopTask, Task.Delay(StopTimeoutMs)).ConfigureAwait(false);
-                if (completed == stopTask)
+                try
                 {
-                    await stopTask.ConfigureAwait(false);
-                    _logger?.Log("INetwork", "StopAsync: monitoring stopped");
+                    var completed = await Task.WhenAny(stopTask, Task.Delay(Timeout.Infinite, linkedCts.Token)).ConfigureAwait(false);
+                    if (completed == stopTask)
+                    {
+                        await stopTask.ConfigureAwait(false);
+                        _logger?.Log("INetwork", "StopAsync: monitoring stopped");
+                    }
                 }
-                else
+                catch (OperationCanceledException)
                 {
-                    _logger?.Log("INetwork", $"StopAsync: StopMonitoring timed out after {StopTimeoutMs / 1000}s, forcing stop");
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        // Caller cancelled
+                        throw;
+                    }
+                    else
+                    {
+                        // Timeout
+                        _logger?.Log("INetwork", $"StopAsync: StopMonitoring timed out after {StopTimeoutMs / 1000}s, forcing stop");
+                    }
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!(ex is OperationCanceledException))
             {
                 _logger?.Log("INetwork", $"StopAsync: StopMonitoring failed: {ex.Message}");
             }
@@ -217,12 +254,20 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             var cookieHeader = headers.FirstOrDefault(h => h.Name.Equals("Cookie", StringComparison.OrdinalIgnoreCase));
             if (cookieHeader != null)
             {
-                cookies = ParseCookiesFromHeader(cookieHeader.Value);
+                cookies = HttpParsingHelper.ParseCookiesFromHeader(cookieHeader.Value, _logger, "INetwork");
             }
         }
 
         // Query string
-        var queryString = ParseQueryString(e.RequestUrl ?? "");
+        var queryString = HttpParsingHelper.ParseQueryString(e.RequestUrl ?? "");
+
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
+            queryString = _redactor.RedactQueryString(queryString);
+        }
 
         // Post data
         HarPostData? postData = null;
@@ -230,7 +275,7 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         {
             postData = new HarPostData
             {
-                MimeType = ExtractMimeType(e.RequestHeaders),
+                MimeType = HttpParsingHelper.ExtractMimeType(e.RequestHeaders),
                 Params = new List<HarParam>(),
                 Text = e.RequestPostData
             };
@@ -241,7 +286,10 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         return new HarRequest
         {
             Method = e.RequestMethod ?? "GET",
-            Url = e.RequestUrl ?? "",
+            Url = (_redactor != null && _redactor.HasRedactions)
+                ? _redactor.RedactUrl(e.RequestUrl ?? "")
+                : (e.RequestUrl ?? ""),
+            // INetwork API does not expose protocol version; defaults to HTTP/1.1 (HAR-01 limitation)
             HttpVersion = "HTTP/1.1",
             Headers = headers,
             Cookies = cookies,
@@ -272,7 +320,14 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         var cookies = new List<HarCookie>();
         if ((captureTypes & CaptureType.ResponseCookies) != 0)
         {
-            cookies = ParseSetCookieHeaders(e.ResponseHeaders);
+            cookies = HttpParsingHelper.ParseSetCookieHeaders(e.ResponseHeaders, _logger, "INetwork");
+        }
+
+        // Apply redaction at capture time (RDCT-04)
+        if (_redactor != null && _redactor.HasRedactions)
+        {
+            headers = _redactor.RedactHeaders(headers);
+            cookies = _redactor.RedactCookies(cookies);
         }
 
         // Extract MIME type from Content-Type header
@@ -293,14 +348,22 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
 
         if (wantsContent && e.ResponseBody != null)
         {
-            bodyText = e.ResponseBody;
-            bodySize = bodyText.Length;
-
-            // Check MaxResponseBodySize limit
-            if (_options.MaxResponseBodySize > 0 && bodySize > _options.MaxResponseBodySize)
+            // HAR-04: Apply MIME filtering (parity with CDP strategy)
+            if (!_mimeMatcher.ShouldRetrieveBody(mimeType))
             {
-                bodyText = bodyText.Substring(0, (int)_options.MaxResponseBodySize);
-                bodySize = _options.MaxResponseBodySize;
+                _logger?.Log("INetwork", $"Body skipped by ResponseBodyScope filter: mimeType={mimeType}");
+            }
+            else
+            {
+                bodyText = e.ResponseBody;
+                bodySize = bodyText.Length;
+
+                // Check MaxResponseBodySize limit
+                if (_options.MaxResponseBodySize > 0 && bodySize > _options.MaxResponseBodySize)
+                {
+                    bodyText = bodyText.Substring(0, (int)_options.MaxResponseBodySize);
+                    bodySize = _options.MaxResponseBodySize;
+                }
             }
         }
 
@@ -323,150 +386,6 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
             HeadersSize = -1,
             BodySize = bodySize
         };
-    }
-
-    /// <summary>
-    /// Extracts MIME type from request headers dictionary.
-    /// </summary>
-    /// <param name="headers">The request headers dictionary.</param>
-    /// <param name="defaultMimeType">The default MIME type to return if Content-Type is not found.</param>
-    /// <returns>The MIME type portion of the Content-Type header, or the default value.</returns>
-    internal static string ExtractMimeType(IReadOnlyDictionary<string, string>? headers, string defaultMimeType = "application/octet-stream")
-    {
-        if (headers == null) return defaultMimeType;
-
-        foreach (var kvp in headers)
-        {
-            if (kvp.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(kvp.Value))
-            {
-                // Content-Type may include charset/boundary, extract just the MIME type
-                return kvp.Value.Split(';')[0].Trim();
-            }
-        }
-
-        return defaultMimeType;
-    }
-
-    /// <summary>
-    /// Parses query string from URL.
-    /// </summary>
-    private List<HarQueryString> ParseQueryString(string url)
-    {
-        var result = new List<HarQueryString>();
-
-        try
-        {
-            var uri = new Uri(url);
-            var query = uri.Query;
-
-            if (string.IsNullOrEmpty(query) || query == "?")
-            {
-                return result;
-            }
-
-            // Remove leading '?'
-            query = query.TrimStart('?');
-
-            // Parse key=value pairs
-            var pairs = query.Split('&');
-            foreach (var pair in pairs)
-            {
-                var parts = pair.Split(new[] { '=' }, 2);
-                var name = HttpUtility.UrlDecode(parts[0]);
-                var value = parts.Length > 1 ? HttpUtility.UrlDecode(parts[1]) : "";
-
-                result.Add(new HarQueryString { Name = name, Value = value });
-            }
-        }
-        catch
-        {
-            // Invalid URL, return empty list
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Parses cookies from Cookie header value.
-    /// </summary>
-    private List<HarCookie> ParseCookiesFromHeader(string? cookieHeader)
-    {
-        var result = new List<HarCookie>();
-
-        if (string.IsNullOrEmpty(cookieHeader))
-        {
-            return result;
-        }
-
-        try
-        {
-            // Cookie header format: "name1=value1; name2=value2"
-            var pairs = cookieHeader!.Split(';');
-            foreach (var pair in pairs)
-            {
-                var trimmed = pair.Trim();
-                var parts = trimmed.Split(new[] { '=' }, 2);
-
-                if (parts.Length == 2)
-                {
-                    result.Add(new HarCookie
-                    {
-                        Name = parts[0].Trim(),
-                        Value = parts[1].Trim()
-                    });
-                }
-            }
-        }
-        catch
-        {
-            // Invalid cookie header, return empty list
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Parses Set-Cookie headers from response headers dictionary.
-    /// </summary>
-    private List<HarCookie> ParseSetCookieHeaders(IReadOnlyDictionary<string, string>? headers)
-    {
-        var result = new List<HarCookie>();
-
-        if (headers == null)
-        {
-            return result;
-        }
-
-        try
-        {
-            // INetwork uses IReadOnlyDictionary<string, string> for headers
-            foreach (var kvp in headers)
-            {
-                if (kvp.Key.Equals("Set-Cookie", StringComparison.OrdinalIgnoreCase))
-                {
-                    var value = kvp.Value;
-                    if (!string.IsNullOrEmpty(value))
-                    {
-                        // Simplified parsing: just extract name=value
-                        var parts = value!.Split(';')[0].Split(new[] { '=' }, 2);
-                        if (parts.Length == 2)
-                        {
-                            result.Add(new HarCookie
-                            {
-                                Name = parts[0].Trim(),
-                                Value = parts[1].Trim()
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // Invalid Set-Cookie header, return empty list
-        }
-
-        return result;
     }
 
     /// <inheritdoc />
@@ -503,27 +422,4 @@ internal sealed class SeleniumNetworkCaptureStrategy : INetworkCaptureStrategy
         _requestTimestamps.Clear();
     }
 
-    /// <summary>
-    /// Extracts the MIME type from the Content-Type header.
-    /// </summary>
-    /// <param name="headers">Request headers dictionary.</param>
-    /// <returns>The MIME type portion of Content-Type, or "application/octet-stream" if not found.</returns>
-    internal static string ExtractMimeType(Dictionary<string, string>? headers)
-    {
-        if (headers == null || headers.Count == 0)
-            return "application/octet-stream";
-
-        // Find Content-Type header (case-insensitive)
-        var contentType = headers.FirstOrDefault(kvp =>
-            kvp.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)).Value;
-
-        if (string.IsNullOrEmpty(contentType))
-            return "application/octet-stream";
-
-        // Strip parameters (e.g., "application/json; charset=utf-8" -> "application/json")
-        var semicolonIndex = contentType.IndexOf(';');
-        return semicolonIndex >= 0
-            ? contentType.Substring(0, semicolonIndex).Trim()
-            : contentType.Trim();
-    }
 }

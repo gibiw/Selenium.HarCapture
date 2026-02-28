@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
 using Selenium.HarCapture.Capture;
@@ -44,6 +45,13 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     public string? ActiveStrategyName => _session?.ActiveStrategyName;
 
     /// <summary>
+    /// Gets the actual output file path after StopAsync/StopAndSaveAsync completes.
+    /// When compression is enabled, returns the .gz path instead of the configured OutputFilePath.
+    /// Returns null if streaming mode is not enabled or capture hasn't stopped yet.
+    /// </summary>
+    public string? FinalOutputFilePath => _session?.FinalOutputFilePath;
+
+    /// <summary>
     /// Initializes a new instance with automatic strategy selection based on driver capabilities.
     /// Uses CDP if available, falls back to INetwork if CDP session creation fails.
     /// </summary>
@@ -80,10 +88,10 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous start operation.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the capture has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is already started.</exception>
-    public async Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null)
+    public async Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        await _session!.StartAsync(initialPageRef, initialPageTitle).ConfigureAwait(false);
+        await _session!.StartAsync(initialPageRef, initialPageTitle, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -104,10 +112,10 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous stop operation. The task result contains the final HAR object.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the capture has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is not started.</exception>
-    public async Task<Har> StopAsync()
+    public async Task<Har> StopAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        return await _session!.StopAsync().ConfigureAwait(false);
+        return await _session!.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -128,7 +136,7 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous stop-and-save operation.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the capture has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when OutputFilePath is not configured or capture is not started.</exception>
-    public async Task StopAndSaveAsync()
+    public async Task StopAndSaveAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         if (_session!.OutputFilePath == null)
@@ -137,10 +145,11 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
 
         var logger = _session.Logger;
         logger?.Log("HarCapture", "StopAndSave (streaming): stopping...");
-        await _session.StopAsync().ConfigureAwait(false);
+        await _session.StopAsync(cancellationToken).ConfigureAwait(false);
 
-        var fileSize = new FileInfo(_session.OutputFilePath).Length;
-        logger?.Log("HarCapture", $"StopAndSave (streaming): completed ({fileSize} bytes)");
+        var finalPath = _session.FinalOutputFilePath;
+        var fileSize = new FileInfo(finalPath!).Length;
+        logger?.Log("HarCapture", $"StopAndSave (streaming): completed {finalPath} ({fileSize} bytes)");
     }
 
     /// <summary>
@@ -164,7 +173,7 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     /// <exception cref="ObjectDisposedException">Thrown when the capture has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is not started.</exception>
     /// <exception cref="ArgumentException">Thrown when filePath is null or empty.</exception>
-    public async Task<Har> StopAndSaveAsync(string filePath, bool writeIndented = true)
+    public async Task<Har> StopAndSaveAsync(string filePath, bool writeIndented = true, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
 
@@ -186,7 +195,7 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
         var logger = _session.Logger;
 
         logger?.Log("HarCapture", "StopAndSave: stopping capture...");
-        var har = await _session.StopAsync().ConfigureAwait(false);
+        var har = await _session.StopAsync(cancellationToken).ConfigureAwait(false);
 
         logger?.Log("HarCapture", $"StopAndSave: saving {har.Log.Entries?.Count ?? 0} entries to {filePath}");
         try
@@ -198,10 +207,15 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
                 Directory.CreateDirectory(dir);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             await HarSerializer.SaveAsync(har, filePath, writeIndented).ConfigureAwait(false);
 
             var fileSize = new FileInfo(filePath).Length;
             logger?.Log("HarCapture", $"StopAndSave: saved successfully ({fileSize} bytes)");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -260,10 +274,32 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Releases all resources used by the <see cref="HarCapture"/>.
+    /// Uses fire-and-forget disposal with 5-second timeout to prevent SynchronizationContext deadlocks.
+    /// For proper async cleanup, prefer DisposeAsync().
     /// </summary>
     public void Dispose()
     {
-        Dispose(disposing: true);
+        if (_disposed) return;
+
+        // Fire-and-forget with timeout to prevent SynchronizationContext deadlocks
+        // (WinForms, WPF, ASP.NET classic)
+        try
+        {
+            var disposeTask = DisposeAsyncCore().AsTask();
+            if (!disposeTask.Wait(TimeSpan.FromSeconds(5)))
+            {
+                // Log timeout but don't throw — dispose should not throw
+                System.Diagnostics.Debug.WriteLine(
+                    "[HarCapture] WARNING: Async disposal timed out after 5s in synchronous Dispose(). " +
+                    "Resources may not be fully cleaned. Prefer DisposeAsync() for proper cleanup.");
+            }
+        }
+        catch (AggregateException)
+        {
+            // Swallow exceptions from async disposal — dispose must not throw
+        }
+
+        _disposed = true;
         GC.SuppressFinalize(this);
     }
 
@@ -273,29 +309,11 @@ public sealed class HarCapture : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous dispose operation.</returns>
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+
         await DisposeAsyncCore().ConfigureAwait(false);
-        Dispose(disposing: false);
-        GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Disposes of managed resources.
-    /// </summary>
-    /// <param name="disposing">True if called from Dispose, false if called from finalizer.</param>
-    private void Dispose(bool disposing)
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        if (disposing)
-        {
-            _session?.Dispose();
-            _session = null;
-        }
-
         _disposed = true;
+        GC.SuppressFinalize(this);
     }
 
     /// <summary>

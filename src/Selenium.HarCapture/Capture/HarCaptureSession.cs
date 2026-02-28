@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using OpenQA.Selenium;
 using Selenium.HarCapture.Capture.Internal;
@@ -33,6 +34,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     private HarStreamWriter? _streamWriter;
     private Har _har = null!;
     private string? _currentPageRef;
+    private string? _finalOutputFilePath;
     private bool _isCapturing;
     private bool _disposed;
 
@@ -62,6 +64,13 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     /// Gets the configured output file path, if any.
     /// </summary>
     internal string? OutputFilePath => _options.OutputFilePath;
+
+    /// <summary>
+    /// Gets the actual output file path after capture is stopped.
+    /// When compression is enabled, this returns the .gz path instead of the original.
+    /// Falls back to <see cref="OutputFilePath"/> if capture hasn't been stopped yet.
+    /// </summary>
+    internal string? FinalOutputFilePath => _finalOutputFilePath ?? _options.OutputFilePath;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HarCaptureSession"/> class without a strategy.
@@ -143,7 +152,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous start operation.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is already started or no strategy is configured.</exception>
-    public async Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null)
+    public async Task StartAsync(string? initialPageRef = null, string? initialPageTitle = null, CancellationToken cancellationToken = default)
     {
         if (_disposed)
         {
@@ -159,6 +168,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
         {
             throw new InvalidOperationException("No capture strategy configured. Use the constructor that accepts IWebDriver for automatic strategy selection.");
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         _logger?.Log("HarCapture", $"StartAsync: strategy={_strategy.StrategyName}, captureTypes={_options.CaptureTypes}, maxBodySize={_options.MaxResponseBodySize}");
         _logger?.Log("HarCapture", $"URL filtering: include={_options.UrlIncludePatterns?.Count ?? 0}, exclude={_options.UrlExcludePatterns?.Count ?? 0}");
@@ -185,7 +196,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             _logger?.Log("HarCapture", $"Initial page: ref={initialPageRef}, title={initialPageTitle}");
         }
 
-        await _strategy.StartAsync(_options).ConfigureAwait(false);
+        await _strategy.StartAsync(_options, cancellationToken).ConfigureAwait(false);
         _isCapturing = true;
         _logger?.Log("HarCapture", "Capture started");
     }
@@ -208,7 +219,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
     /// <returns>A task that represents the asynchronous stop operation. The task result contains the final HAR object.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the session has been disposed.</exception>
     /// <exception cref="InvalidOperationException">Thrown when capture is not started.</exception>
-    public async Task<Har> StopAsync()
+    public async Task<Har> StopAsync(CancellationToken cancellationToken = default)
     {
         if (_disposed)
         {
@@ -220,10 +231,19 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             throw new InvalidOperationException("Capture is not started.");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         _logger?.Log("HarCapture", "StopAsync called");
-        await _strategy!.StopAsync().ConfigureAwait(false);
+
+        // Read timing values BEFORE StopAsync — CdpNetworkCaptureStrategy.StopAsync resets them to null
+        var domContentLoadedMs = _strategy!.LastDomContentLoadedTimestamp;
+        var loadMs = _strategy!.LastLoadTimestamp;
+
+        await _strategy!.StopAsync(cancellationToken).ConfigureAwait(false);
         _isCapturing = false;
         _strategy.EntryCompleted -= OnEntryCompleted;
+
+        ApplyPageTimings(domContentLoadedMs, loadMs);
 
         if (_streamWriter != null)
         {
@@ -243,13 +263,18 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
 
                 _logger?.Log("HarCapture", $"Compressing: {sourcePath} -> {compressedPath}");
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 using (var inputStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None, bufferSize: 65536, useAsync: true))
                 using (var outputStream = new FileStream(compressedPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536, useAsync: true))
                 using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
                 {
-                    await inputStream.CopyToAsync(gzipStream).ConfigureAwait(false);
+                    // netstandard2.0 CopyToAsync doesn't have CancellationToken overload — use default buffer size
+                    await inputStream.CopyToAsync(gzipStream, 81920).ConfigureAwait(false);
                     // No explicit Flush on GZipStream — Dispose handles footer writing (research pitfall #1)
                 }
+
+                cancellationToken.ThrowIfCancellationRequested();
 
                 // Delete uncompressed original if we created a new .gz file
                 if (!string.Equals(sourcePath, compressedPath, StringComparison.OrdinalIgnoreCase))
@@ -258,6 +283,7 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                     _logger?.Log("HarCapture", $"Deleted uncompressed file: {sourcePath}");
                 }
 
+                _finalOutputFilePath = compressedPath;
                 var compressedSize = new FileInfo(compressedPath).Length;
                 _logger?.Log("HarCapture", $"Compression completed: {compressedPath} ({compressedSize} bytes)");
             }
@@ -418,6 +444,41 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             var json = HarSerializer.Serialize(_har, writeIndented: false);
             return HarSerializer.Deserialize(json);
         }
+    }
+
+    /// <summary>
+    /// Writes CDP page timing values into the last HAR page's PageTimings.
+    /// Called from StopAsync after the strategy has been stopped.
+    /// </summary>
+    /// <param name="domContentLoadedMs">DOMContentLoaded time in milliseconds, or null if not available.</param>
+    /// <param name="loadMs">Load event time in milliseconds, or null if not available.</param>
+    private void ApplyPageTimings(double? domContentLoadedMs, double? loadMs)
+    {
+        if (_har.Log.Pages == null || _har.Log.Pages.Count == 0)
+            return;
+        if (domContentLoadedMs == null && loadMs == null)
+            return;
+
+        var pages = _har.Log.Pages;
+        int lastIdx = pages.Count - 1;
+        var existingPage = pages[lastIdx];
+
+        var updatedPage = new HarPage
+        {
+            Id = existingPage.Id,
+            Title = existingPage.Title,
+            StartedDateTime = existingPage.StartedDateTime,
+            Comment = existingPage.Comment,
+            PageTimings = new HarPageTimings
+            {
+                OnContentLoad = domContentLoadedMs,
+                OnLoad = loadMs,
+                Comment = existingPage.PageTimings?.Comment
+            }
+        };
+
+        pages[lastIdx] = updatedPage;
+        _logger?.Log("HarCapture", $"PageTimings written: onContentLoad={domContentLoadedMs:F1}ms, onLoad={loadMs:F1}ms");
     }
 
     /// <summary>

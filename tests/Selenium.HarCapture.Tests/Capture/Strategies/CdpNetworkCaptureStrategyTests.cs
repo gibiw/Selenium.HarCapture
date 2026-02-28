@@ -6,6 +6,7 @@ using OpenQA.Selenium;
 using Selenium.HarCapture.Capture;
 using Selenium.HarCapture.Capture.Strategies;
 using Selenium.HarCapture.Models;
+using Selenium.HarCapture.Tests.Fixtures;
 using Xunit;
 
 namespace Selenium.HarCapture.Tests.Capture.Strategies;
@@ -178,64 +179,71 @@ public class CdpNetworkCaptureStrategyTests
         eventFired.Should().BeFalse("Event handler was subscribed and unsubscribed without firing");
     }
 
-    /// <summary>
-    /// Minimal stub driver that does NOT implement IDevTools.
-    /// Used to test validation logic that requires CDP support.
-    /// </summary>
-    private class NonDevToolsDriver : IWebDriver
+    [Fact]
+    public async Task StopAsync_CalledTwice_DoesNotThrow()
     {
-        public string Url
-        {
-            get => throw new NotImplementedException();
-            set => throw new NotImplementedException();
-        }
+        // Arrange
+        var driver = new NonDevToolsDriver();
+        var strategy = new CdpNetworkCaptureStrategy(driver);
 
-        public string Title => throw new NotImplementedException();
+        // Act & Assert
+        await strategy.StopAsync();
+        Func<Task> act = async () => await strategy.StopAsync();
 
-        public string PageSource => throw new NotImplementedException();
-
-        public string CurrentWindowHandle => throw new NotImplementedException();
-
-        public ReadOnlyCollection<string> WindowHandles => throw new NotImplementedException();
-
-        public void Close()
-        {
-            throw new NotImplementedException();
-        }
-
-        public void Quit()
-        {
-            throw new NotImplementedException();
-        }
-
-        public IOptions Manage()
-        {
-            throw new NotImplementedException();
-        }
-
-        public INavigation Navigate()
-        {
-            throw new NotImplementedException();
-        }
-
-        public ITargetLocator SwitchTo()
-        {
-            throw new NotImplementedException();
-        }
-
-        public IWebElement FindElement(By by)
-        {
-            throw new NotImplementedException();
-        }
-
-        public ReadOnlyCollection<IWebElement> FindElements(By by)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void Dispose()
-        {
-            // No-op
-        }
+        await act.Should().NotThrowAsync("StopAsync should be idempotent (stopping flag prevents race conditions)");
     }
+
+    [Fact]
+    public async Task Dispose_AfterStop_DoesNotThrow()
+    {
+        // Arrange
+        var driver = new NonDevToolsDriver();
+        var strategy = new CdpNetworkCaptureStrategy(driver);
+
+        // Act & Assert
+        await strategy.StopAsync();
+        Action act = () => strategy.Dispose();
+
+        act.Should().NotThrow("Dispose after StopAsync should be safe (stopping flag prevents double-dispose issues)");
+    }
+
+    [Fact]
+    public async Task StopAsync_ClearsInternalState_DoesNotThrow()
+    {
+        // Arrange - Strategy created but never started (adapter is null)
+        var driver = new NonDevToolsDriver();
+        var strategy = new CdpNetworkCaptureStrategy(driver);
+
+        // Act & Assert - StopAsync should handle null adapter + empty LRU cache gracefully
+        Func<Task> act = async () => await strategy.StopAsync();
+
+        await act.Should().NotThrowAsync("StopAsync should handle empty LRU cache gracefully");
+    }
+
+    [Fact]
+    public async Task Dispose_ClearsLruCache_DoesNotThrow()
+    {
+        // Arrange
+        var driver = new NonDevToolsDriver();
+        var strategy = new CdpNetworkCaptureStrategy(driver);
+
+        // Attempt partial start to initialize some state
+        try { await strategy.StartAsync(new CaptureOptions()); } catch { }
+
+        // Act & Assert - Dispose should clear cache + list without exception
+        Action act = () => strategy.Dispose();
+
+        act.Should().NotThrow("Dispose should clear LRU cache without error");
+    }
+
+    /// <summary>
+    /// LRU cache contract (tested via integration tests with real CDP):
+    /// - MaxCacheEntries = 500 (bounded memory)
+    /// - TryGetCachedBody promotes entry to MRU position
+    /// - CacheBody evicts LRU entry when at capacity
+    /// - ClearCache clears both ConcurrentDictionary and LinkedList under lock
+    /// - Thread-safe: ConcurrentDictionary for reads, lock for LinkedList mutations
+    /// Note: Full behavioral testing requires integration tests with real CDP sessions
+    /// that generate 500+ unique URLs. See integration test project.
+    /// </summary>
 }
