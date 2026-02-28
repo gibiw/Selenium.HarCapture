@@ -234,9 +234,16 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         _logger?.Log("HarCapture", "StopAsync called");
+
+        // Read timing values BEFORE StopAsync — CdpNetworkCaptureStrategy.StopAsync resets them to null
+        var domContentLoadedMs = _strategy!.LastDomContentLoadedTimestamp;
+        var loadMs = _strategy!.LastLoadTimestamp;
+
         await _strategy!.StopAsync(cancellationToken).ConfigureAwait(false);
         _isCapturing = false;
         _strategy.EntryCompleted -= OnEntryCompleted;
+
+        ApplyPageTimings(domContentLoadedMs, loadMs);
 
         if (_streamWriter != null)
         {
@@ -437,6 +444,41 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             var json = HarSerializer.Serialize(_har, writeIndented: false);
             return HarSerializer.Deserialize(json);
         }
+    }
+
+    /// <summary>
+    /// Writes CDP page timing values into the last HAR page's PageTimings.
+    /// Called from StopAsync after the strategy has been stopped.
+    /// </summary>
+    /// <param name="domContentLoadedMs">DOMContentLoaded time in milliseconds, or null if not available.</param>
+    /// <param name="loadMs">Load event time in milliseconds, or null if not available.</param>
+    private void ApplyPageTimings(double? domContentLoadedMs, double? loadMs)
+    {
+        if (_har.Log.Pages == null || _har.Log.Pages.Count == 0)
+            return;
+        if (domContentLoadedMs == null && loadMs == null)
+            return;
+
+        var pages = _har.Log.Pages;
+        int lastIdx = pages.Count - 1;
+        var existingPage = pages[lastIdx];
+
+        var updatedPage = new HarPage
+        {
+            Id = existingPage.Id,
+            Title = existingPage.Title,
+            StartedDateTime = existingPage.StartedDateTime,
+            Comment = existingPage.Comment,
+            PageTimings = new HarPageTimings
+            {
+                OnContentLoad = domContentLoadedMs,
+                OnLoad = loadMs,
+                Comment = existingPage.PageTimings?.Comment
+            }
+        };
+
+        pages[lastIdx] = updatedPage;
+        _logger?.Log("HarCapture", $"PageTimings written: onContentLoad={domContentLoadedMs:F1}ms, onLoad={loadMs:F1}ms");
     }
 
     /// <summary>
