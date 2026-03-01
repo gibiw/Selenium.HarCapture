@@ -206,7 +206,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                 _options.OutputFilePath,
                 _har.Log.Version, _har.Log.Creator,
                 _har.Log.Browser, _har.Log.Comment,
-                _har.Log.Pages, _logger);
+                _har.Log.Pages, _logger,
+                _options.CustomMetadata, _options.MaxOutputFileSize);
             _logger?.Log("HarCapture", $"Streaming mode: {_options.OutputFilePath}");
         }
 
@@ -270,6 +271,13 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
             _streamWriter.Complete();
             await _streamWriter.DisposeAsync().ConfigureAwait(false);
             _logger?.Log("HarCapture", $"Streaming completed: {_streamWriter.Count} entries, {_har.Log.Pages?.Count ?? 0} pages");
+
+            // Log truncation notice (read IsTruncated before nulling the writer)
+            if (_streamWriter.IsTruncated)
+            {
+                _logger?.Log("HarCapture", $"Output file was truncated — MaxOutputFileSize limit exceeded after {_streamWriter.Count} entries");
+            }
+
             _streamWriter = null;
 
             // Post-finalization compression: compress the uncompressed HAR file to .gz
@@ -391,7 +399,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                         Browser = _har.Log.Browser,
                         Pages = pages,
                         Entries = new List<HarEntry>(),
-                        Comment = _har.Log.Comment
+                        Comment = _har.Log.Comment,
+                        Custom = _har.Log.Custom
                     }
                 };
             }
@@ -409,7 +418,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                         Browser = _har.Log.Browser,
                         Pages = pages,
                         Entries = entries,
-                        Comment = _har.Log.Comment
+                        Comment = _har.Log.Comment,
+                        Custom = _har.Log.Custom
                     }
                 };
             }
@@ -474,7 +484,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                         Browser = _har.Log.Browser,
                         Pages = _har.Log.Pages != null ? new List<HarPage>(_har.Log.Pages) : null,
                         Entries = new List<HarEntry>(),
-                        Comment = _har.Log.Comment
+                        Comment = _har.Log.Comment,
+                        Custom = _har.Log.Custom
                     }
                 };
             }
@@ -569,7 +580,10 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                     },
                     Browser = browser,
                     Pages = pages,
-                    Entries = new List<HarEntry>()
+                    Entries = new List<HarEntry>(),
+                    Custom = _options.CustomMetadata != null
+                        ? new Dictionary<string, object>(_options.CustomMetadata)
+                        : null
                 }
             };
 
@@ -652,7 +666,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                         Browser = _har.Log.Browser,
                         Pages = _har.Log.Pages,
                         Entries = entries,
-                        Comment = _har.Log.Comment
+                        Comment = _har.Log.Comment,
+                        Custom = _har.Log.Custom
                     }
                 };
 

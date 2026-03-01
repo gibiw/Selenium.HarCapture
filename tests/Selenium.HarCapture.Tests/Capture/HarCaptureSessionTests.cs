@@ -12,6 +12,7 @@ using OpenQA.Selenium.DevTools;
 using Selenium.HarCapture.Capture;
 using Selenium.HarCapture.Capture.Strategies;
 using Selenium.HarCapture.Models;
+using Selenium.HarCapture.Serialization;
 using Selenium.HarCapture.Tests.Fixtures;
 using Xunit;
 
@@ -937,6 +938,119 @@ public sealed class HarCaptureSessionTests
         public IDictionary<string, object> ToDictionary()
         {
             throw new NotImplementedException();
+        }
+    }
+
+    // ========== CustomMetadata and MaxOutputFileSize Tests (Phase 20-02) ==========
+
+    [Fact]
+    public void HarCaptureSession_CustomMetadata_Null_NoCustomField()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var options = new CaptureOptions(); // no CustomMetadata set
+        var session = new HarCaptureSession(strategy, options);
+
+        // Act
+        session.Start();
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Custom.Should().BeNull("no CustomMetadata was configured");
+    }
+
+    [Fact]
+    public void HarCaptureSession_CustomMetadata_PopulatesHarLog()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var options = new CaptureOptions()
+            .WithCustomMetadata("env", "prod")
+            .WithCustomMetadata("txId", "abc-123");
+        var session = new HarCaptureSession(strategy, options);
+
+        // Act
+        session.Start();
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Custom.Should().NotBeNull();
+        har.Log.Custom!.Should().ContainKey("env");
+        har.Log.Custom!.Should().ContainKey("txId");
+        // After JSON round-trip (deep clone), values come back as JsonElement — compare as string
+        har.Log.Custom["env"].ToString().Should().Contain("prod");
+        har.Log.Custom["txId"].ToString().Should().Contain("abc-123");
+    }
+
+    [Fact]
+    public async Task HarCaptureSession_StopAsync_LogsTruncation_AndReturnsCleanly()
+    {
+        // Arrange
+        var tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"truncation_test_{Guid.NewGuid():N}.har");
+        try
+        {
+            var strategy = new MockCaptureStrategy();
+            // Use very small max size to force truncation quickly
+            var options = new CaptureOptions()
+                .WithOutputFile(tempFile)
+                .WithMaxOutputFileSize(500);
+            var session = new HarCaptureSession(strategy, options);
+
+            // Act
+            await session.StartAsync();
+
+            // Write enough entries to exceed the file size limit
+            for (int i = 0; i < 30; i++)
+            {
+                strategy.SimulateEntry(HarEntryFactory.CreateTestEntry($"https://example.com/entry/{i}"), $"req{i}");
+            }
+
+            // StopAsync must NOT throw even when truncated
+            Har har = null!;
+            var act = async () => { har = await session.StopAsync(); };
+            await act.Should().NotThrowAsync("StopAsync must return cleanly even when truncated");
+
+            // File must still be valid JSON
+            var fileContent = System.IO.File.ReadAllText(tempFile);
+            var loadedHar = HarSerializer.Deserialize(fileContent);
+            loadedHar.Log.Should().NotBeNull();
+        }
+        finally
+        {
+            if (System.IO.File.Exists(tempFile))
+                System.IO.File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public async Task HarCaptureSession_StreamingMode_Custom_InFooter()
+    {
+        // Arrange
+        var tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"custom_footer_test_{Guid.NewGuid():N}.har");
+        try
+        {
+            var strategy = new MockCaptureStrategy();
+            var options = new CaptureOptions()
+                .WithOutputFile(tempFile)
+                .WithCustomMetadata("env", "test-env")
+                .WithCustomMetadata("buildId", "42");
+            var session = new HarCaptureSession(strategy, options);
+
+            // Act
+            await session.StartAsync();
+            strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/api"), "req1");
+            await session.StopAsync();
+
+            // Assert: _custom must appear in the streamed output file
+            var fileContent = System.IO.File.ReadAllText(tempFile);
+            fileContent.Should().Contain("_custom");
+            fileContent.Should().Contain("env");
+            fileContent.Should().Contain("test-env");
+        }
+        finally
+        {
+            if (System.IO.File.Exists(tempFile))
+                System.IO.File.Delete(tempFile);
         }
     }
 }
