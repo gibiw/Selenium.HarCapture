@@ -653,6 +653,210 @@ public sealed class HarCaptureSessionTests
         har.Log.Pages[0].PageTimings.OnLoad.Should().BeNull();
     }
 
+    // -------------------------------------------------------------------------
+    // Pause / Resume / IsPaused / EntryWritten tests
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Pause_WhenCapturing_DropsNewEntries()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/before"), "req1");
+
+        // Act
+        session.Pause();
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/during-pause"), "req2");
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Entries.Should().HaveCount(1, "entry during pause should be dropped");
+        har.Log.Entries[0].Request.Url.Should().Be("https://example.com/before");
+    }
+
+    [Fact]
+    public void Resume_AfterPause_AcceptsNewEntries()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        // Act
+        session.Pause();
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/dropped"), "req1");
+        session.Resume();
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/after-resume"), "req2");
+        var har = session.GetHar();
+
+        // Assert
+        har.Log.Entries.Should().HaveCount(1, "entry after resume should be accepted");
+        har.Log.Entries[0].Request.Url.Should().Be("https://example.com/after-resume");
+    }
+
+    [Fact]
+    public void Pause_CalledTwice_DoesNotThrow()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        // Act & Assert
+        Action act = () =>
+        {
+            session.Pause();
+            session.Pause();
+        };
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Resume_CalledTwice_DoesNotThrow()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+        session.Pause();
+
+        // Act & Assert
+        Action act = () =>
+        {
+            session.Resume();
+            session.Resume();
+        };
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Resume_WhenNotPaused_DoesNotThrow()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        // Act & Assert — Resume without prior Pause
+        Action act = () => session.Resume();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void IsPaused_ReflectsState()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        // Assert initial state
+        session.IsPaused.Should().BeFalse("capture starts unpaused");
+
+        // Act & Assert after Pause
+        session.Pause();
+        session.IsPaused.Should().BeTrue("IsPaused should be true after Pause()");
+
+        // Act & Assert after Resume
+        session.Resume();
+        session.IsPaused.Should().BeFalse("IsPaused should be false after Resume()");
+    }
+
+    [Fact]
+    public void EntryWritten_FiresAfterWrite()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start("page1", "Home");
+
+        HarCaptureProgress? receivedProgress = null;
+        session.EntryWritten += (_, p) => receivedProgress = p;
+
+        // Act
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/api"), "req1");
+
+        // Assert
+        receivedProgress.Should().NotBeNull("EntryWritten should fire after entry write");
+        receivedProgress!.EntryCount.Should().Be(1);
+        receivedProgress.EntryUrl.Should().Be("https://example.com/api");
+        receivedProgress.CurrentPageRef.Should().Be("page1");
+    }
+
+    [Fact]
+    public void EntryWritten_NotFired_WhenPaused()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        int fireCount = 0;
+        session.EntryWritten += (_, _) => fireCount++;
+
+        // Act
+        session.Pause();
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/dropped"), "req1");
+
+        // Assert
+        fireCount.Should().Be(0, "EntryWritten must not fire when paused");
+    }
+
+    [Fact]
+    public void EntryWritten_CountIncrementsAcrossEntries()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        var progressList = new System.Collections.Generic.List<HarCaptureProgress>();
+        session.EntryWritten += (_, p) => progressList.Add(p);
+
+        // Act
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/1"), "req1");
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/2"), "req2");
+        strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/3"), "req3");
+
+        // Assert
+        progressList.Should().HaveCount(3);
+        progressList[0].EntryCount.Should().Be(1);
+        progressList[1].EntryCount.Should().Be(2);
+        progressList[2].EntryCount.Should().Be(3);
+    }
+
+    [Fact]
+    public void EntryWritten_FiredOutsideLock_NoDeadlock()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+        session.Start();
+
+        bool deadlockDetected = false;
+
+        // If EntryWritten fires inside the lock, calling GetHar() from the handler
+        // would deadlock (GetHar also takes the same lock).
+        session.EntryWritten += (_, _) =>
+        {
+            // This call will deadlock if the event is fired inside the lock
+            var completed = Task.Run(() => session.GetHar()).Wait(TimeSpan.FromSeconds(5));
+            if (!completed)
+                deadlockDetected = true;
+        };
+
+        // Act — simulate entry, event fires, handler calls GetHar()
+        var task = Task.Run(() =>
+            strategy.SimulateEntry(HarEntryFactory.CreateTestEntry("https://example.com/deadlock-test"), "req1"));
+        var finished = task.Wait(TimeSpan.FromSeconds(10));
+
+        // Assert
+        finished.Should().BeTrue("SimulateEntry should complete without deadlock");
+        deadlockDetected.Should().BeFalse("GetHar() in handler should not deadlock");
+    }
+
     private class MockCapabilitiesDriver : IWebDriver, IHasCapabilities
     {
         public ICapabilities Capabilities { get; set; } = null!;
