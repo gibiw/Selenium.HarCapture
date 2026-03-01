@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using FluentAssertions;
+using Selenium.HarCapture;
 using Selenium.HarCapture.Capture.Internal;
 using Selenium.HarCapture.Models;
 using Xunit;

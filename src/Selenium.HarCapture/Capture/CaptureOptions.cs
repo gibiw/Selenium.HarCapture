@@ -212,6 +212,19 @@ public sealed class CaptureOptions
     public IReadOnlyList<string>? SensitiveQueryParams { get; set; }
 
     /// <summary>
+    /// Gets or sets regex patterns for redacting sensitive content from response/request bodies.
+    /// When set, matching content is replaced with "[REDACTED]" at capture time.
+    /// Each pattern is applied with a 100ms timeout and a 512 KB body size gate for ReDoS protection.
+    /// Default is null (no body content is redacted).
+    /// </summary>
+    /// <remarks>
+    /// Use <see cref="HarPiiPatterns"/> for built-in presets (credit cards, emails, SSNs, phone numbers, IPv4 addresses).
+    /// Patterns are linear-time by design. Avoid nested quantifiers to prevent catastrophic backtracking.
+    /// Bodies exceeding 512 KB are skipped entirely. Base64-encoded bodies are not redacted.
+    /// </remarks>
+    public IReadOnlyList<string>? SensitiveBodyPatterns { get; set; }
+
+    /// <summary>
     /// Sets the output file path for streaming HAR capture.
     /// Entries will be written incrementally to the file, keeping it always valid.
     /// </summary>
@@ -336,6 +349,22 @@ public sealed class CaptureOptions
     public CaptureOptions WithSensitiveQueryParams(params string[] paramPatterns)
     {
         SensitiveQueryParams = paramPatterns;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets regex patterns for redacting sensitive content from response/request bodies.
+    /// Matching content is replaced with "[REDACTED]" at capture time.
+    /// Each pattern runs with a 100ms timeout and a 512 KB body size gate for ReDoS protection.
+    /// </summary>
+    /// <param name="patterns">
+    /// Regex patterns to match and redact (e.g., <see cref="HarPiiPatterns.Email"/>, <see cref="HarPiiPatterns.CreditCard"/>).
+    /// Patterns must be valid .NET regex strings. Avoid nested quantifiers to prevent backtracking.
+    /// </param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithSensitiveBodyPatterns(params string[] patterns)
+    {
+        SensitiveBodyPatterns = patterns;
         return this;
     }
 }

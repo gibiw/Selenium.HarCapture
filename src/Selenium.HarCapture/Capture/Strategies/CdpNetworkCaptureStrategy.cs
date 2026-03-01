@@ -107,7 +107,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         _redactor = new SensitiveDataRedactor(
             options.SensitiveHeaders,
             options.SensitiveCookies,
-            options.SensitiveQueryParams);
+            options.SensitiveQueryParams,
+            options.SensitiveBodyPatterns);
 
         // Create bounded channel + worker tasks for body retrieval
         _bodyChannel = Channel.CreateBounded<BodyRetrievalRequest>(new BoundedChannelOptions(2000)

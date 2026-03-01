@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Selenium.HarCapture;
 using Selenium.HarCapture.Capture;
 using Xunit;
 
