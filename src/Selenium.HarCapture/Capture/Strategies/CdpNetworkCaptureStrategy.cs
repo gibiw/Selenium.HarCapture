@@ -222,6 +222,9 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 }
             }
 
+            // Log redaction audit trail (RDCT-08)
+            _redactor?.LogAudit(_logger);
+
             try
             {
                 var disableTask = _adapter.DisableNetworkAsync();
@@ -506,7 +509,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         {
             if (_stopping) return;
 
-            _wsAccumulator?.AddFrame(e.RequestId, "send", e.Timestamp, e.Opcode, e.PayloadData);
+            _wsAccumulator?.AddFrame(e.RequestId, "send", e.Timestamp, e.Opcode, e.PayloadData,
+                _options.MaxWebSocketFramesPerConnection, _redactor, _logger);
         }
         catch (Exception ex)
         {
@@ -520,7 +524,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
         {
             if (_stopping) return;
 
-            _wsAccumulator?.AddFrame(e.RequestId, "receive", e.Timestamp, e.Opcode, e.PayloadData);
+            _wsAccumulator?.AddFrame(e.RequestId, "receive", e.Timestamp, e.Opcode, e.PayloadData,
+                _options.MaxWebSocketFramesPerConnection, _redactor, _logger);
         }
         catch (Exception ex)
         {
@@ -655,6 +660,16 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 _logger?.Log("CDP", $"Body truncated: id={requestId}, original={bodySize}, limit={_options.MaxResponseBodySize}");
                 bodyText = bodyText?.Substring(0, (int)_options.MaxResponseBodySize);
                 bodySize = _options.MaxResponseBodySize;
+            }
+
+            // Apply body redaction (RDCT-05) — after truncation, before storage
+            if (_redactor != null && _redactor.HasBodyPatterns
+                && bodyText != null && !base64Encoded)
+            {
+                bodyText = _redactor.RedactBody(bodyText, out int redactedCount, _logger, requestId);
+                if (redactedCount > 0)
+                    _redactor.RecordBodyRedaction(redactedCount);
+                bodySize = bodyText?.Length ?? 0;
             }
 
             // Create updated entry with response body
