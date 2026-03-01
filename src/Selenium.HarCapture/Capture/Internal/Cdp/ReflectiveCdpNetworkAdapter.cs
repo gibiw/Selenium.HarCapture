@@ -234,13 +234,32 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
         var requestObj = type.GetProperty("Request")!.GetValue(eventArgs);
         var redirectResponseObj = type.GetProperty("RedirectResponse")!.GetValue(eventArgs);
 
+        CdpInitiatorInfo? initiator = null;
+        try
+        {
+            var initiatorObj = type.GetProperty("Initiator")?.GetValue(eventArgs);
+            if (initiatorObj != null)
+            {
+                var iType = initiatorObj.GetType();
+                var typeVal = iType.GetProperty("Type")?.GetValue(initiatorObj)?.ToString()?.ToLowerInvariant() ?? "other";
+                var url = (string?)iType.GetProperty("Url")?.GetValue(initiatorObj);
+                var lineNum = iType.GetProperty("LineNumber")?.GetValue(initiatorObj) as double?;
+                initiator = new CdpInitiatorInfo { Type = typeVal, Url = url, LineNumber = lineNum };
+            }
+        }
+        catch
+        {
+            // Initiator unavailable on this CDP version — proceed without it
+        }
+
         RequestWillBeSent?.Invoke(new CdpRequestWillBeSentData
         {
             RequestId = (string)type.GetProperty("RequestId")!.GetValue(eventArgs)!,
             WallTime = (double)type.GetProperty("WallTime")!.GetValue(eventArgs)!,
             Timestamp = (double)type.GetProperty("Timestamp")!.GetValue(eventArgs)!,
             Request = MapRequest(requestObj!),
-            RedirectResponse = redirectResponseObj != null ? MapResponse(redirectResponseObj) : null
+            RedirectResponse = redirectResponseObj != null ? MapResponse(redirectResponseObj) : null,
+            Initiator = initiator
         });
     }
 

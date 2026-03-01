@@ -327,8 +327,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             // Calculate started time from WallTime (CDP uses epoch seconds)
             var startedDateTime = DateTimeOffset.FromUnixTimeMilliseconds((long)(e.WallTime * 1000));
 
-            // Record request in correlator
-            _correlator.OnRequestSent(e.RequestId, harRequest, startedDateTime);
+            // Record request in correlator (pass initiator if available)
+            _correlator.OnRequestSent(e.RequestId, harRequest, startedDateTime, e.Initiator);
             _logger?.Log("CDP", $"Request recorded: id={e.RequestId}, pending={_correlator.PendingCount}");
         }
         catch (Exception ex)
@@ -424,7 +424,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                         ResourceType = entry.ResourceType,
                         WebSocketMessages = entry.WebSocketMessages,
                         RequestBodySize = requestBodySize,
-                        ResponseBodySize = responseBodySize
+                        ResponseBodySize = responseBodySize,
+                        Initiator = entry.Initiator
                     };
                     _logger?.Log("CDP", $"EntryCompleted fired (no body): id={e.RequestId}, reqSize={requestBodySize}, respSize={responseBodySize}");
                     EntryCompleted?.Invoke(entryWithSizes, e.RequestId);
@@ -730,7 +731,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 ResourceType = entry.ResourceType,
                 WebSocketMessages = entry.WebSocketMessages,
                 RequestBodySize = requestBodySize,
-                ResponseBodySize = encodedDataLength
+                ResponseBodySize = encodedDataLength,
+                Initiator = entry.Initiator
             };
 
             EntryCompleted?.Invoke(updatedEntry, requestId);

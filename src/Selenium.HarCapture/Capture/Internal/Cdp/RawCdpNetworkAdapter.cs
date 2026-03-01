@@ -135,13 +135,25 @@ internal sealed class RawCdpNetworkAdapter : ICdpNetworkAdapter
             redirectResponse = ParseResponse(redirectProp);
         }
 
+        CdpInitiatorInfo? initiator = null;
+        if (data.TryGetProperty("initiator", out var initiatorEl) && initiatorEl.ValueKind == JsonValueKind.Object)
+        {
+            var typeVal = initiatorEl.TryGetProperty("type", out var tProp) ? tProp.GetString() ?? "other" : "other";
+            var url = initiatorEl.TryGetProperty("url", out var uProp) ? uProp.GetString() : null;
+            double? lineNum = initiatorEl.TryGetProperty("lineNumber", out var lProp) && lProp.ValueKind == JsonValueKind.Number
+                ? lProp.GetDouble()
+                : (double?)null;
+            initiator = new CdpInitiatorInfo { Type = typeVal, Url = url, LineNumber = lineNum };
+        }
+
         RequestWillBeSent?.Invoke(new CdpRequestWillBeSentData
         {
             RequestId = requestId,
             WallTime = wallTime,
             Timestamp = timestamp,
             Request = ParseRequest(request),
-            RedirectResponse = redirectResponse
+            RedirectResponse = redirectResponse,
+            Initiator = initiator
         });
     }
 
