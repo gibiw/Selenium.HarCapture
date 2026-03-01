@@ -228,4 +228,142 @@ public sealed class HarEntryTests
         json.Should().NotContain("url", "url is null and should be omitted");
         json.Should().NotContain("lineNumber", "lineNumber is null and should be omitted");
     }
+
+    // _securityDetails extension field tests (HAR-07)
+
+    [Fact]
+    public void HarEntry_SecurityDetails_Serializes()
+    {
+        // Arrange
+        var entry = CreateBaseEntry();
+        var entryWithSecDetails = new HarEntry
+        {
+            StartedDateTime = entry.StartedDateTime,
+            Time = entry.Time,
+            Request = entry.Request,
+            Response = entry.Response,
+            Cache = entry.Cache,
+            Timings = entry.Timings,
+            SecurityDetails = new HarSecurityDetails
+            {
+                Protocol = "TLS 1.3",
+                Cipher = "AES_256_GCM",
+                SubjectName = "example.com",
+                Issuer = "Let's Encrypt",
+                ValidFrom = 1700000000L,
+                ValidTo = 1730000000L
+            }
+        };
+
+        // Act
+        var json = JsonSerializer.Serialize(entryWithSecDetails);
+
+        // Assert
+        json.Should().Contain("\"_securityDetails\"");
+        json.Should().Contain("\"protocol\":\"TLS 1.3\"");
+        json.Should().Contain("\"cipher\":\"AES_256_GCM\"");
+        json.Should().Contain("\"subjectName\":\"example.com\"");
+        json.Should().Contain("\"issuer\":\"Let\\u0027s Encrypt\"");
+        json.Should().Contain("\"validFrom\":1700000000");
+        json.Should().Contain("\"validTo\":1730000000");
+    }
+
+    [Fact]
+    public void HarEntry_SecurityDetails_Null_Omitted()
+    {
+        // Arrange — SecurityDetails defaults to null
+        var entry = CreateBaseEntry();
+
+        // Act
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().NotContain("_securityDetails", "null SecurityDetails should be omitted via WhenWritingNull");
+    }
+
+    [Fact]
+    public void HarEntry_SecurityDetails_RoundTrip()
+    {
+        // Arrange
+        var entry = CreateBaseEntry();
+        var entryWithSecDetails = new HarEntry
+        {
+            StartedDateTime = entry.StartedDateTime,
+            Time = entry.Time,
+            Request = entry.Request,
+            Response = entry.Response,
+            Cache = entry.Cache,
+            Timings = entry.Timings,
+            SecurityDetails = new HarSecurityDetails
+            {
+                Protocol = "TLS 1.3",
+                Cipher = "AES_256_GCM",
+                SubjectName = "example.com",
+                Issuer = "DigiCert",
+                ValidFrom = 1700000000L,
+                ValidTo = 1730000000L
+            }
+        };
+
+        // Act
+        var json = JsonSerializer.Serialize(entryWithSecDetails);
+        var deserialized = JsonSerializer.Deserialize<HarEntry>(json);
+
+        // Assert
+        deserialized.Should().NotBeNull();
+        deserialized!.SecurityDetails.Should().NotBeNull();
+        deserialized.SecurityDetails!.Protocol.Should().Be("TLS 1.3");
+        deserialized.SecurityDetails.Cipher.Should().Be("AES_256_GCM");
+        deserialized.SecurityDetails.SubjectName.Should().Be("example.com");
+        deserialized.SecurityDetails.Issuer.Should().Be("DigiCert");
+        deserialized.SecurityDetails.ValidFrom.Should().Be(1700000000L);
+        deserialized.SecurityDetails.ValidTo.Should().Be(1730000000L);
+    }
+
+    [Fact]
+    public void HarEntry_Cache_BeforeRequest_Serializes()
+    {
+        // Arrange — entry with cache hit sentinel values
+        var entry = new HarEntry
+        {
+            StartedDateTime = DateTimeOffset.UtcNow,
+            Time = 0,
+            Request = CreateBaseEntry().Request,
+            Response = CreateBaseEntry().Response,
+            Cache = new HarCache
+            {
+                BeforeRequest = new HarCacheEntry
+                {
+                    LastAccess = DateTimeOffset.MinValue,
+                    ETag = "",
+                    HitCount = 0
+                }
+            },
+            Timings = new HarTimings { Send = 0, Wait = 0, Receive = 0 }
+        };
+
+        // Act
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().Contain("\"cache\"");
+        json.Should().Contain("\"beforeRequest\"");
+    }
+
+    [Fact]
+    public void HarEntry_Cache_Empty_BeforeRequest_Null()
+    {
+        // Arrange — normal 200 response: cache object present but beforeRequest is null
+        var entry = CreateBaseEntry();
+        // entry.Cache = new HarCache() (default from CreateBaseEntry) — beforeRequest is null
+
+        // Act
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().Contain("\"cache\"");
+        // beforeRequest null means it's either absent or explicitly null — both are valid
+        // The key point is that cache is present and no beforeRequest content
+        json.Should().NotContain("\"hitCount\"", "no cache hit means no HarCacheEntry fields");
+    }
 }

@@ -392,6 +392,25 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
             }
             else
             {
+                // Determine cache hit and build conditional HarCache (HAR-06)
+                bool isCacheHit = e.Response.FromDiskCache || e.Response.FromServiceWorker || harResponse.Status == 304;
+                var harCache = isCacheHit
+                    ? new HarCache { BeforeRequest = new HarCacheEntry { LastAccess = DateTimeOffset.MinValue, ETag = "", HitCount = 0 } }
+                    : new HarCache();
+
+                // Map SecurityDetails to HarSecurityDetails (HAR-07)
+                HarSecurityDetails? harSecDetails = e.Response.SecurityDetails != null
+                    ? new HarSecurityDetails
+                    {
+                        Protocol = e.Response.SecurityDetails.Protocol,
+                        Cipher = e.Response.SecurityDetails.Cipher,
+                        SubjectName = e.Response.SecurityDetails.SubjectName,
+                        Issuer = e.Response.SecurityDetails.Issuer,
+                        ValidFrom = e.Response.SecurityDetails.ValidFrom,
+                        ValidTo = e.Response.SecurityDetails.ValidTo
+                    }
+                    : null;
+
                 // Determine if we should retrieve response body
                 bool shouldGetBody = ShouldRetrieveResponseBody(e.Response.Status, e.Response.MimeType);
 
@@ -415,7 +434,7 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                         Time = entry.Time,
                         Request = entry.Request,
                         Response = entry.Response,
-                        Cache = entry.Cache,
+                        Cache = harCache,
                         Timings = entry.Timings,
                         PageRef = entry.PageRef,
                         ServerIPAddress = entry.ServerIPAddress,
@@ -425,15 +444,36 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                         WebSocketMessages = entry.WebSocketMessages,
                         RequestBodySize = requestBodySize,
                         ResponseBodySize = responseBodySize,
-                        Initiator = entry.Initiator
+                        Initiator = entry.Initiator,
+                        SecurityDetails = harSecDetails
                     };
                     _logger?.Log("CDP", $"EntryCompleted fired (no body): id={e.RequestId}, reqSize={requestBodySize}, respSize={responseBodySize}");
                     EntryCompleted?.Invoke(entryWithSizes, e.RequestId);
                 }
                 else
                 {
+                    // Carry cache and security details through body retrieval
+                    var entryWithCacheAndSecurity = new HarEntry
+                    {
+                        StartedDateTime = entry.StartedDateTime,
+                        Time = entry.Time,
+                        Request = entry.Request,
+                        Response = entry.Response,
+                        Cache = harCache,
+                        Timings = entry.Timings,
+                        PageRef = entry.PageRef,
+                        ServerIPAddress = entry.ServerIPAddress,
+                        Connection = entry.Connection,
+                        Comment = entry.Comment,
+                        ResourceType = entry.ResourceType,
+                        WebSocketMessages = entry.WebSocketMessages,
+                        RequestBodySize = entry.RequestBodySize,
+                        ResponseBodySize = entry.ResponseBodySize,
+                        Initiator = entry.Initiator,
+                        SecurityDetails = harSecDetails
+                    };
                     // Queue body retrieval to bounded channel — workers process concurrently.
-                    var request = new BodyRetrievalRequest(e.RequestId, entry, e.Response.EncodedDataLength);
+                    var request = new BodyRetrievalRequest(e.RequestId, entryWithCacheAndSecurity, e.Response.EncodedDataLength);
                     if (!_bodyChannel!.Writer.TryWrite(request))
                     {
                         // In Wait mode, TryWrite returns false only when channel is completed
@@ -732,7 +772,8 @@ internal sealed class CdpNetworkCaptureStrategy : INetworkCaptureStrategy
                 WebSocketMessages = entry.WebSocketMessages,
                 RequestBodySize = requestBodySize,
                 ResponseBodySize = encodedDataLength,
-                Initiator = entry.Initiator
+                Initiator = entry.Initiator,
+                SecurityDetails = entry.SecurityDetails
             };
 
             EntryCompleted?.Invoke(updatedEntry, requestId);

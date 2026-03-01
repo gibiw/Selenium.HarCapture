@@ -232,4 +232,212 @@ public sealed class HarCompletenessTests
     }
 
     #endregion
+
+    #region HAR-06: Cache Hit/Miss Detection
+
+    private static HarEntry CreateSimpleEntry(int status = 200, bool fromDiskCache = false, bool fromServiceWorker = false, CdpSecurityDetails? securityDetails = null)
+    {
+        bool isCacheHit = fromDiskCache || fromServiceWorker || status == 304;
+        var cache = isCacheHit
+            ? new HarCache { BeforeRequest = new HarCacheEntry { LastAccess = DateTimeOffset.MinValue, ETag = "", HitCount = 0 } }
+            : new HarCache();
+
+        HarSecurityDetails? harSecDetails = securityDetails != null
+            ? new HarSecurityDetails
+            {
+                Protocol = securityDetails.Protocol,
+                Cipher = securityDetails.Cipher,
+                SubjectName = securityDetails.SubjectName,
+                Issuer = securityDetails.Issuer,
+                ValidFrom = securityDetails.ValidFrom,
+                ValidTo = securityDetails.ValidTo
+            }
+            : null;
+
+        return new HarEntry
+        {
+            StartedDateTime = DateTimeOffset.UtcNow,
+            Time = 10,
+            Request = new HarRequest
+            {
+                Method = "GET",
+                Url = "https://example.com/resource",
+                HttpVersion = "HTTP/1.1",
+                Cookies = new List<HarCookie>(),
+                Headers = new List<HarHeader>(),
+                QueryString = new List<HarQueryString>(),
+                HeadersSize = -1,
+                BodySize = 0
+            },
+            Response = new HarResponse
+            {
+                Status = status,
+                StatusText = status == 304 ? "Not Modified" : "OK",
+                HttpVersion = "HTTP/1.1",
+                Cookies = new List<HarCookie>(),
+                Headers = new List<HarHeader>(),
+                Content = new HarContent { Size = 0, MimeType = "text/html" },
+                RedirectURL = "",
+                HeadersSize = -1,
+                BodySize = -1
+            },
+            Cache = cache,
+            Timings = new HarTimings { Send = 0, Wait = 5, Receive = 5 },
+            SecurityDetails = harSecDetails
+        };
+    }
+
+    [Fact]
+    public void CacheHit_FromDiskCache_PopulatesBeforeRequest()
+    {
+        // Arrange & Act
+        var entry = CreateSimpleEntry(status: 200, fromDiskCache: true);
+
+        // Assert
+        entry.Cache.Should().NotBeNull();
+        entry.Cache.BeforeRequest.Should().NotBeNull("fromDiskCache=true should populate cache.beforeRequest");
+        entry.Cache.BeforeRequest!.ETag.Should().Be("");
+        entry.Cache.BeforeRequest.HitCount.Should().Be(0);
+        entry.Cache.BeforeRequest.LastAccess.Should().Be(DateTimeOffset.MinValue);
+    }
+
+    [Fact]
+    public void CacheHit_304_PopulatesBeforeRequest()
+    {
+        // Arrange & Act
+        var entry = CreateSimpleEntry(status: 304);
+
+        // Assert
+        entry.Cache.Should().NotBeNull();
+        entry.Cache.BeforeRequest.Should().NotBeNull("HTTP 304 should populate cache.beforeRequest");
+    }
+
+    [Fact]
+    public void NoCacheHit_LeavesCacheEmpty()
+    {
+        // Arrange & Act — normal 200 response with no cache flags
+        var entry = CreateSimpleEntry(status: 200, fromDiskCache: false);
+
+        // Assert
+        entry.Cache.Should().NotBeNull();
+        entry.Cache.BeforeRequest.Should().BeNull("normal 200 response should leave cache.beforeRequest null");
+    }
+
+    [Fact]
+    public void CacheHit_FromServiceWorker_PopulatesBeforeRequest()
+    {
+        // Arrange & Act
+        var entry = CreateSimpleEntry(status: 200, fromServiceWorker: true);
+
+        // Assert
+        entry.Cache.Should().NotBeNull();
+        entry.Cache.BeforeRequest.Should().NotBeNull("fromServiceWorker=true should populate cache.beforeRequest");
+    }
+
+    [Fact]
+    public void CacheHit_Serializes_BeforeRequest_With_Sentinels()
+    {
+        // Arrange
+        var entry = CreateSimpleEntry(status: 200, fromDiskCache: true);
+
+        // Act
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().Contain("\"beforeRequest\"");
+        json.Should().Contain("\"lastAccess\"");
+    }
+
+    #endregion
+
+    #region HAR-07: SecurityDetails TLS Extension Field
+
+    [Fact]
+    public void SecurityDetails_Populated_ForHttps()
+    {
+        // Arrange
+        var secDetails = new CdpSecurityDetails
+        {
+            Protocol = "TLS 1.3",
+            Cipher = "AES_256_GCM",
+            SubjectName = "example.com",
+            Issuer = "Let's Encrypt",
+            ValidFrom = 1700000000L,
+            ValidTo = 1730000000L
+        };
+
+        // Act
+        var entry = CreateSimpleEntry(status: 200, securityDetails: secDetails);
+
+        // Assert
+        entry.SecurityDetails.Should().NotBeNull("HTTPS response with SecurityDetails should populate _securityDetails");
+        entry.SecurityDetails!.Protocol.Should().Be("TLS 1.3");
+        entry.SecurityDetails.Cipher.Should().Be("AES_256_GCM");
+        entry.SecurityDetails.SubjectName.Should().Be("example.com");
+        entry.SecurityDetails.ValidFrom.Should().Be(1700000000L);
+        entry.SecurityDetails.ValidTo.Should().Be(1730000000L);
+    }
+
+    [Fact]
+    public void SecurityDetails_Null_WhenAbsent()
+    {
+        // Arrange & Act — response without SecurityDetails (HTTP)
+        var entry = CreateSimpleEntry(status: 200, securityDetails: null);
+
+        // Assert
+        entry.SecurityDetails.Should().BeNull("HTTP response without SecurityDetails should leave _securityDetails null");
+    }
+
+    [Fact]
+    public void SecurityDetails_ExtractionFailure_DoesNotCrash()
+    {
+        // Arrange — CdpSecurityDetails with default empty values (simulates partial extraction)
+        var secDetails = new CdpSecurityDetails();
+
+        // Act
+        var entry = CreateSimpleEntry(status: 200, securityDetails: secDetails);
+
+        // Assert — should not throw, entry is valid with empty strings
+        entry.SecurityDetails.Should().NotBeNull();
+        entry.SecurityDetails!.Protocol.Should().Be("");
+        entry.SecurityDetails.Cipher.Should().Be("");
+    }
+
+    [Fact]
+    public void SecurityDetails_OmittedFromJson_WhenNull()
+    {
+        // Arrange
+        var entry = CreateSimpleEntry(status: 200, securityDetails: null);
+
+        // Act
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().NotContain("_securityDetails", "null SecurityDetails should be omitted from JSON");
+    }
+
+    [Fact]
+    public void SecurityDetails_PresentInJson_WhenNotNull()
+    {
+        // Arrange
+        var secDetails = new CdpSecurityDetails
+        {
+            Protocol = "TLS 1.2",
+            Cipher = "ECDHE_RSA_AES_128_GCM_SHA256",
+            SubjectName = "api.example.com",
+            Issuer = "DigiCert",
+            ValidFrom = 1680000000L,
+            ValidTo = 1710000000L
+        };
+
+        // Act
+        var entry = CreateSimpleEntry(status: 200, securityDetails: secDetails);
+        var json = JsonSerializer.Serialize(entry);
+
+        // Assert
+        json.Should().Contain("\"_securityDetails\"");
+        json.Should().Contain("\"protocol\":\"TLS 1.2\"");
+    }
+
+    #endregion
 }

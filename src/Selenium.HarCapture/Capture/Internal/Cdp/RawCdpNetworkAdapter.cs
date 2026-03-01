@@ -328,6 +328,27 @@ internal sealed class RawCdpNetworkAdapter : ICdpNetworkAdapter
             };
         }
 
+        // Extract fromDiskCache — bool flag indicating cache hit
+        bool fromDiskCache = response.TryGetProperty("fromDiskCache", out var fdcProp) && fdcProp.ValueKind == JsonValueKind.True;
+
+        // Extract fromServiceWorker — bool flag indicating service worker cache hit
+        bool fromServiceWorker = response.TryGetProperty("fromServiceWorker", out var fswProp) && fswProp.ValueKind == JsonValueKind.True;
+
+        // Extract securityDetails — TLS certificate info for HTTPS responses
+        CdpSecurityDetails? secDetails = null;
+        if (response.TryGetProperty("securityDetails", out var sdEl) && sdEl.ValueKind == JsonValueKind.Object)
+        {
+            secDetails = new CdpSecurityDetails
+            {
+                Protocol = sdEl.TryGetProperty("protocol", out var p2) ? p2.GetString() ?? "" : "",
+                Cipher = sdEl.TryGetProperty("cipher", out var c) ? c.GetString() ?? "" : "",
+                SubjectName = sdEl.TryGetProperty("subjectName", out var sn) ? sn.GetString() ?? "" : "",
+                Issuer = sdEl.TryGetProperty("issuer", out var iss) ? iss.GetString() ?? "" : "",
+                ValidFrom = sdEl.TryGetProperty("validFrom", out var vf) && vf.ValueKind == JsonValueKind.Number ? (long)vf.GetDouble() : 0,
+                ValidTo = sdEl.TryGetProperty("validTo", out var vt) && vt.ValueKind == JsonValueKind.Number ? (long)vt.GetDouble() : 0
+            };
+        }
+
         return new CdpResponseInfo
         {
             Status = response.GetProperty("status").GetInt64(),
@@ -336,7 +357,10 @@ internal sealed class RawCdpNetworkAdapter : ICdpNetworkAdapter
             MimeType = response.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null,
             Headers = ParseHeaders(response),
             Timing = timing,
-            EncodedDataLength = encodedDataLength
+            EncodedDataLength = encodedDataLength,
+            FromDiskCache = fromDiskCache,
+            FromServiceWorker = fromServiceWorker,
+            SecurityDetails = secDetails
         };
     }
 

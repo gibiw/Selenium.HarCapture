@@ -115,4 +115,13 @@ public sealed class HarEntry
     [JsonPropertyName("_initiator")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HarInitiator? Initiator { get; init; }
+
+    /// <summary>
+    /// Gets or initializes TLS security details for HTTPS responses.
+    /// Vendor extension field (_securityDetails) populated from CDP Network.SecurityDetails.
+    /// Null (and omitted from JSON) for HTTP responses or when SecurityDetails is not available.
+    /// </summary>
+    [JsonPropertyName("_securityDetails")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HarSecurityDetails? SecurityDetails { get; init; }
 }

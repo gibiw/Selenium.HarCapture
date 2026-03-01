@@ -65,6 +65,39 @@ internal sealed class CdpResponseInfo
     /// Corresponds to CDP Network.Response.encodedDataLength.
     /// </summary>
     public long EncodedDataLength { get; init; }
+
+    /// <summary>
+    /// Indicates whether the response was served from disk cache.
+    /// Corresponds to CDP Network.Response.fromDiskCache.
+    /// </summary>
+    public bool FromDiskCache { get; init; }
+
+    /// <summary>
+    /// Indicates whether the response was served from a service worker.
+    /// Corresponds to CDP Network.Response.fromServiceWorker.
+    /// </summary>
+    public bool FromServiceWorker { get; init; }
+
+    /// <summary>
+    /// TLS security details for HTTPS responses.
+    /// Corresponds to CDP Network.Response.securityDetails.
+    /// Null for HTTP responses or when not provided by the browser.
+    /// </summary>
+    public CdpSecurityDetails? SecurityDetails { get; init; }
+}
+
+/// <summary>
+/// Version-independent DTO mirroring CDP Network.SecurityDetails.
+/// Contains TLS certificate and protocol information for HTTPS responses.
+/// </summary>
+internal sealed class CdpSecurityDetails
+{
+    public string Protocol { get; init; } = "";
+    public string Cipher { get; init; } = "";
+    public string SubjectName { get; init; } = "";
+    public string Issuer { get; init; } = "";
+    public long ValidFrom { get; init; }
+    public long ValidTo { get; init; }
 }
 
 /// <summary>

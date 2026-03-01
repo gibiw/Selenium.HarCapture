@@ -60,6 +60,7 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
     private EventInfo? _domContentEventFiredEvent;
     private EventInfo? _loadEventFiredEvent;
 
+    private readonly FileLogger? _logger;
     private bool _disposed;
 
     public event Action<CdpRequestWillBeSentData>? RequestWillBeSent;
@@ -77,8 +78,9 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
     public event Action<CdpPageTimingEventData>? DomContentEventFired;
     public event Action<CdpPageTimingEventData>? LoadEventFired;
 
-    internal ReflectiveCdpNetworkAdapter(DevToolsSession session, Type domainsType)
+    internal ReflectiveCdpNetworkAdapter(DevToolsSession session, Type domainsType, FileLogger? logger = null)
     {
+        _logger = logger;
         // Call session.GetVersionSpecificDomains<T>() via reflection
         var getDomainsMethod = typeof(DevToolsSession)
             .GetMethod(nameof(DevToolsSession.GetVersionSpecificDomains))!
@@ -419,7 +421,7 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
         };
     }
 
-    private static CdpResponseInfo MapResponse(object r)
+    private CdpResponseInfo MapResponse(object r)
     {
         var type = r.GetType();
         var headers = type.GetProperty("Headers")!.GetValue(r);
@@ -444,6 +446,42 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
             }
         }
 
+        // Extract FromDiskCache — bool property indicating cache hit
+        bool fromDiskCache = false;
+        var fdcProp = type.GetProperty("FromDiskCache");
+        if (fdcProp != null && fdcProp.GetValue(r) is bool fdc)
+            fromDiskCache = fdc;
+
+        // Extract FromServiceWorker — bool property indicating service worker cache hit
+        bool fromServiceWorker = false;
+        var fswProp = type.GetProperty("FromServiceWorker");
+        if (fswProp != null && fswProp.GetValue(r) is bool fsw)
+            fromServiceWorker = fsw;
+
+        // Extract SecurityDetails — best-effort with try/catch (may not be present on all CDP versions)
+        CdpSecurityDetails? secDetails = null;
+        try
+        {
+            var sdObj = type.GetProperty("SecurityDetails")?.GetValue(r);
+            if (sdObj != null)
+            {
+                var sdType = sdObj.GetType();
+                secDetails = new CdpSecurityDetails
+                {
+                    Protocol = (string?)sdType.GetProperty("Protocol")?.GetValue(sdObj) ?? "",
+                    Cipher = (string?)sdType.GetProperty("Cipher")?.GetValue(sdObj) ?? "",
+                    SubjectName = (string?)sdType.GetProperty("SubjectName")?.GetValue(sdObj) ?? "",
+                    Issuer = (string?)sdType.GetProperty("Issuer")?.GetValue(sdObj) ?? "",
+                    ValidFrom = (long)((double?)sdType.GetProperty("ValidFrom")?.GetValue(sdObj) ?? 0),
+                    ValidTo = (long)((double?)sdType.GetProperty("ValidTo")?.GetValue(sdObj) ?? 0)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log("CDP", $"SecurityDetails extraction failed: {ex.Message}");
+        }
+
         return new CdpResponseInfo
         {
             Status = (long)type.GetProperty("Status")!.GetValue(r)!,
@@ -452,7 +490,10 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
             MimeType = (string?)type.GetProperty("MimeType")!.GetValue(r),
             Headers = CastHeaders(headers),
             Timing = timing != null ? MapTiming(timing) : null,
-            EncodedDataLength = encodedDataLength
+            EncodedDataLength = encodedDataLength,
+            FromDiskCache = fromDiskCache,
+            FromServiceWorker = fromServiceWorker,
+            SecurityDetails = secDetails
         };
     }
 

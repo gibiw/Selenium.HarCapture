@@ -639,7 +639,8 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                     WebSocketMessages = entry.WebSocketMessages,
                     RequestBodySize = entry.RequestBodySize,
                     ResponseBodySize = entry.ResponseBodySize,
-                    Initiator = entry.Initiator
+                    Initiator = entry.Initiator,
+                    SecurityDetails = entry.SecurityDetails
                 };
             }
 
