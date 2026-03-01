@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System;
 
 namespace Selenium.HarCapture.Capture;
 
@@ -389,6 +390,55 @@ public sealed class CaptureOptions
     public CaptureOptions WithMaxWebSocketFramesPerConnection(int maxFrames)
     {
         MaxWebSocketFramesPerConnection = maxFrames;
+        return this;
+    }
+
+    /// <summary>
+    /// Gets or sets the maximum size in bytes for the output HAR file in streaming mode.
+    /// When the file exceeds this limit, streaming is aborted and no further entries are written.
+    /// Default is 0 (unlimited). Requires <see cref="OutputFilePath"/> to be set.
+    /// </summary>
+    /// <remarks>
+    /// When the limit is exceeded, the file remains valid JSON — the last entry that pushed past
+    /// the limit is fully written with a valid footer. Subsequent entries are silently dropped.
+    /// <see cref="StopAsync"/> returns cleanly without throwing.
+    /// A value of 0 means no limit (all entries are written). Negative values are invalid.
+    /// </remarks>
+    public long MaxOutputFileSize { get; set; } = 0;
+
+    /// <summary>
+    /// Gets or sets user-provided key-value metadata to embed in the HAR file under the "_custom" key.
+    /// Default is null (no custom metadata).
+    /// </summary>
+    /// <remarks>
+    /// Values must be JSON-primitive-compatible (string, int, long, double, bool).
+    /// Use <see cref="WithCustomMetadata"/> for fluent configuration.
+    /// </remarks>
+    public IDictionary<string, object>? CustomMetadata { get; set; }
+
+    /// <summary>
+    /// Sets the maximum size in bytes for the output HAR file in streaming mode.
+    /// When the file exceeds this limit, streaming is aborted cleanly.
+    /// </summary>
+    /// <param name="bytes">Maximum file size in bytes. Use 0 for unlimited. Negative values are invalid.</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithMaxOutputFileSize(long bytes)
+    {
+        MaxOutputFileSize = bytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a key-value entry to the custom metadata dictionary embedded in the HAR file.
+    /// Multiple calls accumulate entries; calling with the same key overwrites the previous value.
+    /// </summary>
+    /// <param name="key">The metadata key (e.g., "env", "transactionId").</param>
+    /// <param name="value">The metadata value. Must be JSON-primitive-compatible (string, int, long, double, bool).</param>
+    /// <returns>The current instance for method chaining.</returns>
+    public CaptureOptions WithCustomMetadata(string key, object value)
+    {
+        CustomMetadata ??= new Dictionary<string, object>();
+        ((Dictionary<string, object>)CustomMetadata)[key] = value;
         return this;
     }
 }

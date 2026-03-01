@@ -212,4 +212,53 @@ public class CaptureOptionsValidatorTests
 
         act.Should().NotThrow();
     }
+
+    // ── Field-level: MaxOutputFileSize ────────────────────────────────────────
+
+    [Fact]
+    public void Validator_MaxOutputFileSize_Negative_Throws()
+    {
+        var options = new CaptureOptions { MaxOutputFileSize = -1 };
+
+        Action act = () => CaptureOptionsValidator.ValidateAndThrow(options);
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("MaxOutputFileSize");
+    }
+
+    [Fact]
+    public void Validator_MaxOutputFileSize_WithoutOutputFile_Throws()
+    {
+        var options = new CaptureOptions { MaxOutputFileSize = 1024, OutputFilePath = null };
+
+        Action act = () => CaptureOptionsValidator.ValidateAndThrow(options);
+
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("MaxOutputFileSize")
+            .And.Contain("OutputFilePath");
+    }
+
+    [Fact]
+    public void Validator_MaxOutputFileSize_Zero_OK()
+    {
+        var options = new CaptureOptions { MaxOutputFileSize = 0 };
+
+        Action act = () => CaptureOptionsValidator.ValidateAndThrow(options);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Validator_MaxOutputFileSize_WithOutputFile_OK()
+    {
+        var options = new CaptureOptions
+        {
+            MaxOutputFileSize = 1024,
+            OutputFilePath = "/tmp/test.har"
+        };
+
+        Action act = () => CaptureOptionsValidator.ValidateAndThrow(options);
+
+        act.Should().NotThrow();
+    }
 }

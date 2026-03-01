@@ -53,6 +53,19 @@ internal static class CaptureOptionsValidator
                 $"MaxWebSocketFramesPerConnection must be >= 0, but was {options.MaxWebSocketFramesPerConnection}.");
         }
 
+        if (options.MaxOutputFileSize < 0)
+        {
+            errors.Add(
+                $"MaxOutputFileSize must be >= 0, but was {options.MaxOutputFileSize}.");
+        }
+
+        if (options.MaxOutputFileSize > 0 && options.OutputFilePath == null)
+        {
+            errors.Add(
+                "MaxOutputFileSize requires OutputFilePath to be set (streaming mode only). " +
+                "Set OutputFilePath before configuring MaxOutputFileSize.");
+        }
+
         if (options.CreatorName != null && options.CreatorName.Length == 0)
         {
             errors.Add(
