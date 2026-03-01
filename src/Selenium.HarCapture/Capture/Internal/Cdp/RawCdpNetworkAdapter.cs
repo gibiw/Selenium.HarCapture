@@ -305,6 +305,17 @@ internal sealed class RawCdpNetworkAdapter : ICdpNetworkAdapter
             timing = ParseTiming(timingEl);
         }
 
+        // Extract encodedDataLength — CDP Network.Response.encodedDataLength (may be long or double in JSON)
+        long encodedDataLength = 0;
+        if (response.TryGetProperty("encodedDataLength", out var edlProp))
+        {
+            encodedDataLength = edlProp.ValueKind switch
+            {
+                JsonValueKind.Number => edlProp.TryGetInt64(out var l) ? l : (long)edlProp.GetDouble(),
+                _ => 0
+            };
+        }
+
         return new CdpResponseInfo
         {
             Status = response.GetProperty("status").GetInt64(),
@@ -312,7 +323,8 @@ internal sealed class RawCdpNetworkAdapter : ICdpNetworkAdapter
             Protocol = response.TryGetProperty("protocol", out var p) ? p.GetString() : null,
             MimeType = response.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null,
             Headers = ParseHeaders(response),
-            Timing = timing
+            Timing = timing,
+            EncodedDataLength = encodedDataLength
         };
     }
 

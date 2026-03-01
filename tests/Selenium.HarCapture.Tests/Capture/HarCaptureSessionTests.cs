@@ -1053,4 +1053,84 @@ public sealed class HarCaptureSessionTests
                 System.IO.File.Delete(tempFile);
         }
     }
+
+    // ========== Body Size Preservation Tests (Phase 20-03) ==========
+
+    [Fact]
+    public void HarCaptureSession_OnEntryCompleted_PreservesBodySizes()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+
+        session.Start("page1", "Test Page");
+
+        // Create an entry with body size extension fields
+        var entryWithSizes = new HarEntry
+        {
+            StartedDateTime = DateTimeOffset.UtcNow,
+            Time = 100,
+            Request = new HarRequest
+            {
+                Method = "POST",
+                Url = "https://example.com/api",
+                HttpVersion = "HTTP/1.1",
+                Cookies = new List<HarCookie>(),
+                Headers = new List<HarHeader>(),
+                QueryString = new List<HarQueryString>(),
+                HeadersSize = -1,
+                BodySize = 100
+            },
+            Response = new HarResponse
+            {
+                Status = 200,
+                StatusText = "OK",
+                HttpVersion = "HTTP/1.1",
+                Cookies = new List<HarCookie>(),
+                Headers = new List<HarHeader>(),
+                Content = new HarContent { Size = 200, MimeType = "application/json" },
+                RedirectURL = "",
+                HeadersSize = -1,
+                BodySize = 200
+            },
+            Cache = new HarCache(),
+            Timings = new HarTimings { Send = 1, Wait = 50, Receive = 49 },
+            RequestBodySize = 100,
+            ResponseBodySize = 200
+        };
+
+        // Act — simulate the entry arriving (triggers OnEntryCompleted, which will copy PageRef and must preserve body sizes)
+        strategy.SimulateEntry(entryWithSizes, "req1");
+
+        var har = session.Stop();
+
+        // Assert — body sizes survive the PageRef copy in OnEntryCompleted
+        var capturedEntry = har.Log.Entries!.Should().ContainSingle().Subject;
+        capturedEntry.RequestBodySize.Should().Be(100, "RequestBodySize must survive OnEntryCompleted PageRef copy");
+        capturedEntry.ResponseBodySize.Should().Be(200, "ResponseBodySize must survive OnEntryCompleted PageRef copy");
+        capturedEntry.PageRef.Should().Be("page1", "PageRef must be set by OnEntryCompleted");
+    }
+
+    [Fact]
+    public void HarCaptureSession_OnEntryCompleted_ZeroBodySizes_OmittedFromJson()
+    {
+        // Arrange
+        var strategy = new MockCaptureStrategy();
+        var session = new HarCaptureSession(strategy);
+
+        session.Start();
+
+        // Entry with no body sizes (GET request)
+        var entry = HarEntryFactory.CreateTestEntry();  // BodySize = -1 (not 0)
+        strategy.SimulateEntry(entry, "req1");
+
+        var har = session.Stop();
+
+        // Act — serialize the HAR
+        var json = Selenium.HarCapture.Serialization.HarSerializer.Serialize(har);
+
+        // Assert — zero body sizes should not appear in JSON
+        json.Should().NotContain("_requestBodySize", "zero RequestBodySize should be omitted via WhenWritingDefault");
+        json.Should().NotContain("_responseBodySize", "zero ResponseBodySize should be omitted via WhenWritingDefault");
+    }
 }

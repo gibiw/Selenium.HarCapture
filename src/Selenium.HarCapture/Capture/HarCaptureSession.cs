@@ -634,7 +634,11 @@ public sealed class HarCaptureSession : IDisposable, IAsyncDisposable
                     PageRef = _currentPageRef,
                     ServerIPAddress = entry.ServerIPAddress,
                     Connection = entry.Connection,
-                    Comment = entry.Comment
+                    Comment = entry.Comment,
+                    ResourceType = entry.ResourceType,
+                    WebSocketMessages = entry.WebSocketMessages,
+                    RequestBodySize = entry.RequestBodySize,
+                    ResponseBodySize = entry.ResponseBodySize
                 };
             }
 

@@ -405,6 +405,26 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
         var type = r.GetType();
         var headers = type.GetProperty("Headers")!.GetValue(r);
         var timing = type.GetProperty("Timing")!.GetValue(r);
+
+        // Extract EncodedDataLength — CDP Network.Response.encodedDataLength (long)
+        long encodedDataLength = 0;
+        var encodedDataLengthProp = type.GetProperty("EncodedDataLength");
+        if (encodedDataLengthProp != null)
+        {
+            var rawValue = encodedDataLengthProp.GetValue(r);
+            if (rawValue != null)
+            {
+                // CDP may return long or double depending on version
+                encodedDataLength = rawValue switch
+                {
+                    long l => l,
+                    double d => (long)d,
+                    int i => i,
+                    _ => 0
+                };
+            }
+        }
+
         return new CdpResponseInfo
         {
             Status = (long)type.GetProperty("Status")!.GetValue(r)!,
@@ -412,7 +432,8 @@ internal sealed class ReflectiveCdpNetworkAdapter : ICdpNetworkAdapter
             Protocol = (string?)type.GetProperty("Protocol")!.GetValue(r),
             MimeType = (string?)type.GetProperty("MimeType")!.GetValue(r),
             Headers = CastHeaders(headers),
-            Timing = timing != null ? MapTiming(timing) : null
+            Timing = timing != null ? MapTiming(timing) : null,
+            EncodedDataLength = encodedDataLength
         };
     }
 
